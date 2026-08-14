@@ -380,6 +380,22 @@ func TestHealthScopeSelectsModelSpecificPreference(t *testing.T) {
 	}
 }
 
+func TestUnknownHealthCandidatesExploreGlobally(t *testing.T) {
+	p := newTestPool(t, Options{})
+	ready := []*slotState{
+		p.slots["jp-tyo-wg-001"],
+		p.slots["us-lax-wg-001"],
+	}
+	rng := rand.New(rand.NewPCG(7, 11))
+	seen := make(map[string]bool)
+	for range 64 {
+		seen[pickReady(ready, rng).spec.ID] = true
+	}
+	if !seen["jp-tyo-wg-001"] || !seen["us-lax-wg-001"] {
+		t.Fatalf("unknown-health exploration stayed region-pinned: %v", seen)
+	}
+}
+
 func TestReportRemovesOnlyOnePreferredMember(t *testing.T) {
 	p := newTestPool(t, Options{PreferredTTL: time.Hour, Cooldown: time.Hour})
 	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
@@ -487,14 +503,14 @@ func TestPreferUsesSlotAfterDestinationCooldownExpires(t *testing.T) {
 	}
 }
 
-func TestUnusedHuntPrefersEastAsia(t *testing.T) {
+func TestUnusedHuntExploresAllRegions(t *testing.T) {
 	p := newTestPool(t, Options{})
 	for i, id := range []string{"jp-tyo-wg-001", "jp-osa-wg-001", "us-lax-wg-001", "de-fra-wg-001"} {
 		setFreshPublicIP(p.slots[id], netip.MustParseAddr(fmt.Sprintf("198.51.100.%d", i+20)))
 	}
 
 	seen := map[string]int{}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 128; i++ {
 		state, _, reservation, err := p.pick(policy.Policy{}, "opencode.ai")
 		if err != nil {
 			t.Fatalf("pick %d: %v", i, err)
@@ -502,8 +518,8 @@ func TestUnusedHuntPrefersEastAsia(t *testing.T) {
 		seen[state.spec.Country]++
 		p.rollbackAcquisition(reservation)
 	}
-	if seen["jp"] != 16 {
-		t.Fatalf("unused hunt should stay in east-asia first, got %v", seen)
+	if seen["jp"] == 0 || seen["us"] == 0 || seen["de"] == 0 {
+		t.Fatalf("unused hunt stayed region-pinned: %v", seen)
 	}
 }
 

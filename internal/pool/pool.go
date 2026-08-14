@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/minpeter/global-egress/internal/catalog"
-	"github.com/minpeter/global-egress/internal/georoute"
 	"github.com/minpeter/global-egress/internal/policy"
 	"github.com/minpeter/global-egress/internal/socksdial"
 	"github.com/minpeter/global-egress/internal/wgtunnel"
@@ -694,7 +693,7 @@ func (p *Pool) pick(
 		}
 	}
 	if len(ready) > 0 {
-		state := pickNearestReady(ready, p.rng)
+		state := pickReady(ready, p.rng)
 		reservation, err := p.reserveAcquisitionLocked(pol, state, now)
 		if err != nil {
 			return nil, false, nil, err
@@ -708,7 +707,7 @@ func (p *Pool) pick(
 	if err := p.reserveCapacityLocked(); err != nil {
 		return nil, false, nil, err
 	}
-	state := pickNearestReady(candidates, p.rng)
+	state := pickReady(candidates, p.rng)
 	reservation, err := p.reserveAcquisitionLocked(pol, state, now)
 	if err != nil {
 		return nil, false, nil, err
@@ -772,25 +771,9 @@ func (p *Pool) eligibleLocked(state *slotState, pol policy.Policy, target string
 	return true
 }
 
-// nearbyHuntRegions are the exits a KR/JP lab should try first when walking
-// unused IPs. A random US/EU first hop is why one-shot hunts miss 2s TTFT.
-var nearbyHuntRegions = map[georoute.Region]struct{}{
-	georoute.EastAsia:  {},
-	georoute.SouthAsia: {},
-}
-
-func pickNearestReady(ready []*slotState, rng *rand.Rand) *slotState {
+func pickReady(ready []*slotState, rng *rand.Rand) *slotState {
 	if len(ready) == 1 {
 		return ready[0]
-	}
-	near := ready[:0:0]
-	for _, state := range ready {
-		if _, ok := nearbyHuntRegions[georoute.RegionOf(state.spec.Country)]; ok {
-			near = append(near, state)
-		}
-	}
-	if len(near) > 0 {
-		return near[rng.IntN(len(near))]
 	}
 	return ready[rng.IntN(len(ready))]
 }
