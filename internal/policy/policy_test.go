@@ -22,7 +22,8 @@ func TestParseEmptyAndPlainUsername(t *testing.T) {
 func TestParseDirectives(t *testing.T) {
 	t.Parallel()
 	pol, err := Parse(
-		"cc=JP|us;city=us-lax;sess=job-1;ttl=600;uniq=batch-7;bttl=30s;not=1.2.3.4|5.6.7.8",
+		"cc=JP|us;city=us-lax;sess=job-1;ttl=600;uniq=batch-7;bttl=30s;" +
+			"health=opencode-zen.deepseek-v4-flash-0731;not=1.2.3.4|5.6.7.8",
 	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -48,6 +49,9 @@ func TestParseDirectives(t *testing.T) {
 	}
 	if pol.UniqueBatch != "batch-7" {
 		t.Errorf("UniqueBatch = %q", pol.UniqueBatch)
+	}
+	if pol.HealthScope != "opencode-zen.deepseek-v4-flash-0731" {
+		t.Errorf("HealthScope = %q", pol.HealthScope)
 	}
 	if len(pol.ExcludeIPs) != 2 {
 		t.Errorf("ExcludeIPs = %v, want 2 entries", pol.ExcludeIPs)
@@ -145,13 +149,19 @@ func TestStringRoundTrips(t *testing.T) {
 
 func TestLogStringRedactsExcludedIPs(t *testing.T) {
 	t.Parallel()
-	pol, err := Parse("cc=jp;not=203.0.113.4|198.51.100.8")
+	pol, err := Parse(
+		"cc=jp;health=opencode-zen.deepseek-v4-flash-0731;" +
+			"not=203.0.113.4|198.51.100.8",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := pol.LogString()
-	if got != "cc=jp;not_count=2" {
-		t.Errorf("LogString() = %q, want redacted count", got)
+	if got != "cc=jp;health=present;not_count=2" {
+		t.Errorf("LogString() = %q, want redacted health and IP count", got)
+	}
+	if strings.Contains(got, "deepseek") {
+		t.Errorf("LogString() leaked the health scope: %q", got)
 	}
 	for _, ip := range []string{"203.0.113.4", "198.51.100.8"} {
 		if strings.Contains(got, ip) {

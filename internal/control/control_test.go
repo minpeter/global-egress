@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,12 +42,37 @@ func newTestServer(t *testing.T, opts Options) (*Server, *pool.Pool) {
 		t.Fatalf("pool.New: %v", err)
 	}
 	t.Cleanup(egressPool.Close)
+	seedTestIPs(t, egressPool)
 
 	opts.Pool = egressPool
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return New(opts), egressPool
+}
+
+func seedTestIPs(t *testing.T, egressPool *pool.Pool) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "inventory.json")
+	blob := []byte(`{
+		"version": 1,
+		"slots": {
+			"jp-tyo-wg-001": {
+				"public_ip": "203.0.113.10",
+				"checked_at": "2099-01-01T00:00:00Z"
+			},
+			"us-lax-wg-001": {
+				"public_ip": "203.0.113.11",
+				"checked_at": "2099-01-01T00:00:00Z"
+			}
+		}
+	}`)
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+	if _, err := egressPool.LoadInventory(path); err != nil {
+		t.Fatalf("LoadInventory: %v", err)
+	}
 }
 
 func do(t *testing.T, server *Server, method, target, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -192,11 +220,14 @@ func TestReportValidation(t *testing.T) {
 		want       int
 	}{
 		{"not json", "{", http.StatusBadRequest},
-		{"neither session nor slot", `{"target":"example.com"}`, http.StatusBadRequest},
+		{"neither session nor slot", `{"scope":"example.com"}`, http.StatusBadRequest},
+		{"missing scope", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10"}`, http.StatusBadRequest},
+		{"missing public IP", `{"slot":"jp-tyo-wg-001","scope":"example.com"}`, http.StatusBadRequest},
 		{"bad cooldown", `{"slot":"jp-tyo-wg-001","cooldown":"soon"}`, http.StatusBadRequest},
 		{"unknown field", `{"slot":"jp-tyo-wg-001","nope":1}`, http.StatusBadRequest},
-		{"unknown slot", `{"slot":"zz-zzz-wg-001"}`, http.StatusNotFound},
-		{"valid", `{"slot":"jp-tyo-wg-001","target":"https://example.com/a?b=1","reason":"http_403"}`, http.StatusOK},
+		{"unknown slot", `{"slot":"zz-zzz-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731"}`, http.StatusNotFound},
+		{"IP mismatch", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.99","scope":"example.com"}`, http.StatusConflict},
+		{"valid", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731","reason":"zen_free_quota"}`, http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,7 +243,7 @@ func TestReportValidation(t *testing.T) {
 func TestReportNormalisesTarget(t *testing.T) {
 	server, _ := newTestServer(t, Options{})
 	rec := do(t, server, http.MethodPost, "/v1/report",
-		`{"slot":"jp-tyo-wg-001","target":"HTTPS://Example.COM:443/path"}`,
+		`{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"OpenCode-Zen.Flash-0731"}`,
 		map[string]string{"Content-Type": "application/json"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
@@ -221,9 +252,59 @@ func TestReportNormalisesTarget(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Target != "example.com" {
-		t.Errorf("Target = %q, want example.com", result.Target)
+	if result.Target != "opencode-zen.flash-0731" {
+		t.Errorf("Target = %q, want opencode-zen.flash-0731", result.Target)
 	}
+}
+
+func TestPreferValidation(t *testing.T) {
+	server, _ := newTestServer(t, Options{})
+
+	cases := []struct {
+		name, body string
+		want       int
+	}{
+		{"missing slot", `{"public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731"}`, http.StatusBadRequest},
+		{"missing scope", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10"}`, http.StatusBadRequest},
+		{"missing public IP", `{"slot":"jp-tyo-wg-001","scope":"opencode-zen.flash-0731"}`, http.StatusBadRequest},
+		{"bad ttl", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731","ttl":"soon"}`, http.StatusBadRequest},
+		{"unknown slot", `{"slot":"zz-zzz-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731"}`, http.StatusNotFound},
+		{"IP mismatch", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.99","scope":"opencode-zen.flash-0731"}`, http.StatusConflict},
+		{"valid", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731","ttl":"10m"}`, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(t, server, http.MethodPost, "/v1/prefer", tc.body,
+				map[string]string{"Content-Type": "application/json"})
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestConcurrentOutcomeFeedbackIsRaceSafe(t *testing.T) {
+	server, _ := newTestServer(t, Options{})
+	const workers = 64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func() {
+			defer wg.Done()
+			path := "/v1/prefer"
+			body := `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731","ttl":"10m"}`
+			if i%2 == 0 {
+				path = "/v1/report"
+				body = `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.flash-0731","cooldown":"24h"}`
+			}
+			rec := do(t, server, http.MethodPost, path, body,
+				map[string]string{"Content-Type": "application/json"})
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s status = %d, body %s", path, rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestNormalizeTarget(t *testing.T) {

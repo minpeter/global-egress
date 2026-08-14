@@ -72,6 +72,7 @@ func TestDefaultsPopulateSafetyLimits(t *testing.T) {
 		"pool.dial_attempts":          cfg.Pool.DialAttempts,
 		"pool.max_unique_batches":     cfg.Pool.MaxUniqueBatches,
 		"pool.max_sessions":           cfg.Pool.MaxSessions,
+		"pool.preferred_max":          cfg.Pool.PreferredMax,
 	}
 	for name, value := range cases {
 		if value <= 0 {
@@ -81,6 +82,7 @@ func TestDefaultsPopulateSafetyLimits(t *testing.T) {
 	for name, value := range map[string]time.Duration{
 		"pool.new_tunnel_window": cfg.Pool.NewTunnelWindow,
 		"pool.cooldown":          cfg.Pool.Cooldown,
+		"pool.preferred_ttl":     cfg.Pool.PreferredTTL,
 		"pool.session_ttl":       cfg.Pool.SessionTTL,
 		"pool.max_session_ttl":   cfg.Pool.MaxSessionTTL,
 	} {

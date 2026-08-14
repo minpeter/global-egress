@@ -64,6 +64,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/sessions/{name}/rotate", s.handleRotate)
 	s.mux.HandleFunc("DELETE /v1/sessions/{name}", s.handleRotate)
 	s.mux.HandleFunc("POST /v1/report", s.handleReport)
+	s.mux.HandleFunc("POST /v1/prefer", s.handlePrefer)
 }
 
 // ServeHTTP applies access control and dispatches.
@@ -215,9 +216,10 @@ type reportRequest struct {
 	// Slot names the egress directly, when the caller knows it (for example from
 	// the X-Egress-Slot response header).
 	Slot string `json:"slot"`
-	// Target is the destination that blocked us. A bare host is expected; a full
-	// URL is accepted and reduced to its host.
-	Target string `json:"target"`
+	// PublicIP is the measured identity from X-Egress-IP.
+	PublicIP string `json:"public_ip"`
+	// Scope is the provider/model-specific health key carried by health=.
+	Scope string `json:"scope"`
 	// Reason is free-form, for operator logs, e.g. "http_403".
 	Reason string `json:"reason"`
 	// Cooldown overrides the configured default, e.g. "30m".
@@ -236,6 +238,16 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "either session or slot is required")
 		return
 	}
+	scope := normalizeHealthScope(body.Scope)
+	if scope == "" {
+		writeError(w, http.StatusBadRequest, "scope is required and must be a safe opaque token")
+		return
+	}
+	publicIP, err := netip.ParseAddr(strings.TrimSpace(body.PublicIP))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "public_ip must be an IP address")
+		return
+	}
 
 	var cooldown time.Duration
 	if body.Cooldown != "" {
@@ -250,11 +262,74 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	result, err := s.opts.Pool.Report(pool.ReportInput{
 		Session:  body.Session,
 		Slot:     body.Slot,
-		Target:   normalizeTarget(body.Target),
+		PublicIP: publicIP,
+		Target:   scope,
 		Reason:   body.Reason,
 		Cooldown: cooldown,
 	})
 	if err != nil {
+		if errors.Is(err, pool.ErrIdentityMismatch) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// preferRequest is the body of POST /v1/prefer.
+type preferRequest struct {
+	// Slot is the egress that actually served the destination.
+	Slot string `json:"slot"`
+	// PublicIP is the measured identity from X-Egress-IP.
+	PublicIP string `json:"public_ip"`
+	// Scope is the provider/model-specific health key carried by health=.
+	Scope string `json:"scope"`
+	// TTL overrides the configured preferred lifetime, e.g. "30m".
+	TTL string `json:"ttl"`
+}
+
+func (s *Server) handlePrefer(w http.ResponseWriter, r *http.Request) {
+	var body preferRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %v", err))
+		return
+	}
+	scope := normalizeHealthScope(body.Scope)
+	if body.Slot == "" || scope == "" {
+		writeError(w, http.StatusBadRequest, "slot and scope are required")
+		return
+	}
+	publicIP, err := netip.ParseAddr(strings.TrimSpace(body.PublicIP))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "public_ip must be an IP address")
+		return
+	}
+
+	var ttl time.Duration
+	if body.TTL != "" {
+		parsed, err := time.ParseDuration(body.TTL)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "ttl must be a duration such as \"30m\"")
+			return
+		}
+		ttl = parsed
+	}
+
+	result, err := s.opts.Pool.Prefer(pool.PreferInput{
+		Slot:     body.Slot,
+		PublicIP: publicIP,
+		Target:   scope,
+		TTL:      ttl,
+	})
+	if err != nil {
+		if errors.Is(err, pool.ErrIdentityMismatch) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -278,6 +353,22 @@ func normalizeTarget(target string) string {
 		target = host
 	}
 	return strings.ToLower(strings.Trim(target, "[]"))
+}
+
+func normalizeHealthScope(scope string) string {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope == "" || len(scope) > 128 {
+		return ""
+	}
+	for _, r := range scope {
+		if r >= 'a' && r <= 'z' ||
+			r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return scope
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

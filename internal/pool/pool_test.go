@@ -240,6 +240,307 @@ func TestReportWithoutTargetDisablesSlot(t *testing.T) {
 	}
 }
 
+func TestPreferPinsSlotForDestination(t *testing.T) {
+	p := newTestPool(t, Options{PreferredTTL: time.Hour})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.11"))
+
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	state, sticky, reservation, err := p.pick(policy.Policy{}, "opencode.ai")
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
+	if sticky {
+		t.Fatal("destination preference is not a sticky session")
+	}
+	if state.spec.ID != "us-lax-wg-001" {
+		t.Fatalf("pick slot = %s, want the preferred us-lax-wg-001", state.spec.ID)
+	}
+}
+
+func TestPreferBeatsUniqueBatch(t *testing.T) {
+	p := newTestPool(t, Options{BatchTTL: time.Hour, PreferredTTL: time.Hour})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.11"))
+
+	p.mu.Lock()
+	if _, err := p.reserveBatchLocked(policy.Policy{UniqueBatch: "b1"}, p.slots["us-lax-wg-001"], time.Now()); err != nil {
+		p.mu.Unlock()
+		t.Fatalf("reserveBatchLocked: %v", err)
+	}
+	p.mu.Unlock()
+
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	state, _, reservation, err := p.pick(policy.Policy{UniqueBatch: "b1"}, "opencode.ai")
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
+	if state.spec.ID != "us-lax-wg-001" {
+		t.Fatalf("preferred slot must reuse through uniq=, got %s", state.spec.ID)
+	}
+}
+
+func TestPreferRingSpreadsLoad(t *testing.T) {
+	p := newTestPool(t, Options{PreferredTTL: time.Hour, PreferredMax: 2})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["us-lax-wg-002"], netip.MustParseAddr("198.51.100.12"))
+	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.11"))
+
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer first: %v", err)
+	}
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-002", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer second: %v", err)
+	}
+
+	first, _, res1, err := p.pick(policy.Policy{}, "opencode.ai")
+	if err != nil {
+		t.Fatalf("first pick: %v", err)
+	}
+	second, _, res2, err := p.pick(policy.Policy{}, "opencode.ai")
+	if err != nil {
+		t.Fatalf("second pick: %v", err)
+	}
+	t.Cleanup(func() {
+		p.rollbackAcquisition(res1)
+		p.rollbackAcquisition(res2)
+	})
+	if first.spec.ID == second.spec.ID {
+		t.Fatalf("preferred ring piled both picks on %s", first.spec.ID)
+	}
+	seen := map[string]struct{}{first.spec.ID: {}, second.spec.ID: {}}
+	if _, ok := seen["us-lax-wg-001"]; !ok {
+		t.Error("ring missed us-lax-wg-001")
+	}
+	if _, ok := seen["us-lax-wg-002"]; !ok {
+		t.Error("ring missed us-lax-wg-002")
+	}
+}
+
+func TestPreferRingRotatesEqualLoadAfterRelease(t *testing.T) {
+	p := newTestPool(t, Options{PreferredTTL: time.Hour, PreferredMax: 2})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["us-lax-wg-002"], netip.MustParseAddr("198.51.100.12"))
+
+	for _, slot := range []string{"us-lax-wg-001", "us-lax-wg-002"} {
+		if _, err := p.Prefer(PreferInput{Slot: slot, Target: "opencode-zen.flash-0731"}); err != nil {
+			t.Fatalf("Prefer(%s): %v", slot, err)
+		}
+	}
+
+	var picked []string
+	for range 4 {
+		state, _, reservation, err := p.pick(policy.Policy{}, "opencode-zen.flash-0731")
+		if err != nil {
+			t.Fatalf("pick: %v", err)
+		}
+		picked = append(picked, state.spec.ID)
+		p.rollbackAcquisition(reservation)
+	}
+
+	want := []string{
+		"us-lax-wg-001",
+		"us-lax-wg-002",
+		"us-lax-wg-001",
+		"us-lax-wg-002",
+	}
+	if strings.Join(picked, ",") != strings.Join(want, ",") {
+		t.Fatalf("equal-load preferred picks = %v, want round-robin %v", picked, want)
+	}
+}
+
+func TestHealthScopeSelectsModelSpecificPreference(t *testing.T) {
+	p := newTestPool(t, Options{PreferredTTL: time.Hour})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["jp-tyo-wg-001"], netip.MustParseAddr("198.51.100.11"))
+
+	const scope = "opencode-zen.deepseek-v4-flash-0731"
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: scope}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	state, _, reservation, err := p.pick(
+		policy.Policy{HealthScope: scope},
+		"opencode.ai",
+	)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
+	if state.spec.ID != "us-lax-wg-001" {
+		t.Fatalf("health-scoped pick = %s, want preferred us-lax-wg-001", state.spec.ID)
+	}
+}
+
+func TestReportRemovesOnlyOnePreferredMember(t *testing.T) {
+	p := newTestPool(t, Options{PreferredTTL: time.Hour, Cooldown: time.Hour})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["us-lax-wg-002"], netip.MustParseAddr("198.51.100.12"))
+
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer first: %v", err)
+	}
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-002", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer second: %v", err)
+	}
+	if _, err := p.Report(ReportInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	state, _, reservation, err := p.pick(policy.Policy{}, "opencode.ai")
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
+	if state.spec.ID != "us-lax-wg-002" {
+		t.Fatalf("remaining preferred slot = %s, want us-lax-wg-002", state.spec.ID)
+	}
+}
+
+func TestReportCoolsEverySlotSharingThePublicIP(t *testing.T) {
+	p := newTestPool(t, Options{Cooldown: time.Hour})
+	sharedIP := netip.MustParseAddr("198.51.100.10")
+	setFreshPublicIP(p.slots["us-lax-wg-001"], sharedIP)
+	setFreshPublicIP(p.slots["us-lax-wg-002"], sharedIP)
+
+	const scope = "opencode-zen.deepseek-v4-flash-0731"
+	if _, err := p.Report(ReportInput{
+		Slot:   "us-lax-wg-001",
+		Target: scope,
+		Reason: "zen_free_quota",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	_, _, _, err := p.pick(
+		policy.Policy{
+			HealthScope: scope,
+			Slot:        "us-lax-wg-002",
+		},
+		"opencode.ai",
+	)
+	if !errors.Is(err, ErrNoCandidate) {
+		t.Fatalf("shared-IP pick error = %v, want ErrNoCandidate", err)
+	}
+}
+
+func TestPreferDoesNotClearActiveIPCooldown(t *testing.T) {
+	p := newTestPool(t, Options{Cooldown: time.Hour, PreferredTTL: time.Hour})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+
+	const scope = "opencode-zen.deepseek-v4-flash-0731"
+	if _, err := p.Report(ReportInput{
+		Slot:   "us-lax-wg-001",
+		Target: scope,
+		Reason: "zen_free_quota",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: scope}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	_, _, _, err := p.pick(
+		policy.Policy{
+			HealthScope: scope,
+			Slot:        "us-lax-wg-001",
+		},
+		"opencode.ai",
+	)
+	if !errors.Is(err, ErrNoCandidate) {
+		t.Fatalf("cooled preferred pick error = %v, want ErrNoCandidate", err)
+	}
+}
+
+func TestPreferUsesSlotAfterDestinationCooldownExpires(t *testing.T) {
+	p := newTestPool(t, Options{PreferredTTL: time.Hour, Cooldown: time.Hour})
+	ip := netip.MustParseAddr("198.51.100.10")
+	setFreshPublicIP(p.slots["us-lax-wg-001"], ip)
+	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.11"))
+
+	if _, err := p.Report(ReportInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	p.mu.Lock()
+	p.slots["us-lax-wg-001"].cooldowns["opencode.ai"] = time.Now().Add(-time.Second)
+	p.ipCooldowns["opencode.ai"][ip] = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	state, _, reservation, err := p.pick(policy.Policy{}, "opencode.ai")
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
+	if state.spec.ID != "us-lax-wg-001" {
+		t.Fatalf("expired cooldown preferred slot = %s, want us-lax-wg-001", state.spec.ID)
+	}
+}
+
+func TestUnusedHuntPrefersEastAsia(t *testing.T) {
+	p := newTestPool(t, Options{})
+	for i, id := range []string{"jp-tyo-wg-001", "jp-osa-wg-001", "us-lax-wg-001", "de-fra-wg-001"} {
+		setFreshPublicIP(p.slots[id], netip.MustParseAddr(fmt.Sprintf("198.51.100.%d", i+20)))
+	}
+
+	seen := map[string]int{}
+	for i := 0; i < 16; i++ {
+		state, _, reservation, err := p.pick(policy.Policy{}, "opencode.ai")
+		if err != nil {
+			t.Fatalf("pick %d: %v", i, err)
+		}
+		seen[state.spec.Country]++
+		p.rollbackAcquisition(reservation)
+	}
+	if seen["jp"] != 16 {
+		t.Fatalf("unused hunt should stay in east-asia first, got %v", seen)
+	}
+}
+
+func TestReportReleasesSlotFromUniqueBatch(t *testing.T) {
+	p := newTestPool(t, Options{BatchTTL: time.Hour, Cooldown: time.Hour})
+	state := p.slots["us-lax-wg-001"]
+	ip := netip.MustParseAddr("198.51.100.50")
+	setFreshPublicIP(state, ip)
+	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.51"))
+
+	p.mu.Lock()
+	if _, err := p.reserveBatchLocked(policy.Policy{UniqueBatch: "b1"}, state, time.Now()); err != nil {
+		p.mu.Unlock()
+		t.Fatalf("reserveBatchLocked: %v", err)
+	}
+	p.mu.Unlock()
+
+	if _, err := p.Report(ReportInput{
+		Slot:   "us-lax-wg-001",
+		Target: "opencode.ai",
+		Reason: "zen_free_quota",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	p.mu.Lock()
+	stillUsed := p.eligibleLocked(state, policy.Policy{UniqueBatch: "b1"}, "other.example", time.Now())
+	cooled := p.eligibleLocked(state, policy.Policy{UniqueBatch: "b1"}, "opencode.ai", time.Now())
+	p.mu.Unlock()
+	if !stillUsed {
+		t.Error("a reported slot must rejoin its unique batch after cooldown is destination-scoped")
+	}
+	if cooled {
+		t.Error("the reported destination must still cool the slot")
+	}
+}
+
 func TestReportUnknownTargets(t *testing.T) {
 	p := newTestPool(t, Options{})
 	if _, err := p.Report(ReportInput{Slot: "does-not-exist"}); err == nil {
@@ -655,6 +956,49 @@ func TestInventoryRoundTrip(t *testing.T) {
 	}
 	if got := restored.Stats().UniqueIPs; got != 2 {
 		t.Errorf("UniqueIPs after restore = %d, want 2", got)
+	}
+}
+
+func TestHealthStatePersistsAcrossInventoryRoundTrip(t *testing.T) {
+	p := newTestPool(t, Options{
+		Cooldown:     time.Hour,
+		PreferredTTL: time.Hour,
+	})
+	path := filepath.Join(t.TempDir(), "state", "inventory.json")
+	successIP := netip.MustParseAddr("203.0.113.10")
+	blockedIP := netip.MustParseAddr("203.0.113.11")
+	setFreshPublicIP(p.slots["us-lax-wg-001"], successIP)
+	setFreshPublicIP(p.slots["us-lax-wg-002"], blockedIP)
+
+	const scope = "opencode-zen.deepseek-v4-flash-0731"
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: scope}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+	if _, err := p.Report(ReportInput{
+		Slot:   "us-lax-wg-002",
+		Target: scope,
+		Reason: "zen_free_quota",
+	}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if err := p.SaveInventory(path); err != nil {
+		t.Fatalf("SaveInventory: %v", err)
+	}
+
+	restored := newTestPool(t, Options{})
+	if _, err := restored.LoadInventory(path); err != nil {
+		t.Fatalf("LoadInventory: %v", err)
+	}
+
+	restored.mu.Lock()
+	defer restored.mu.Unlock()
+	preferred := restored.preferred[scope]
+	if preferred == nil || len(preferred.slots) != 1 ||
+		preferred.slots[0].publicIP != successIP {
+		t.Fatalf("restored preferred = %#v, want %s", preferred, successIP)
+	}
+	if until := restored.ipCooldowns[scope][blockedIP]; !time.Now().Before(until) {
+		t.Fatalf("restored cooldown = %s, want future deadline", until)
 	}
 }
 

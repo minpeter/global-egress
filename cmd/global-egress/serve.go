@@ -301,6 +301,8 @@ func poolOptionsFrom(cfg config.Config, logger *slog.Logger) pool.Options {
 		MaxBatchTTL:             cfg.Pool.MaxBatchTTL,
 		MaxUniqueBatches:        cfg.Pool.MaxUniqueBatches,
 		Cooldown:                cfg.Pool.Cooldown,
+		PreferredTTL:            cfg.Pool.PreferredTTL,
+		PreferredMax:            cfg.Pool.PreferredMax,
 		IdleTimeout:             cfg.Pool.IdleTimeout,
 		HandshakeTimeout:        cfg.Pool.HandshakeTimeout,
 		DialAttempts:            cfg.Pool.DialAttempts,

@@ -201,6 +201,7 @@ curl -x http://egress.example.internal:3128 --proxy-user 'uniq=batch-7:x'       
 | `ttl=600` | Session lifetime in seconds (or `10m`) |
 | `uniq=batch` | Never reuse a public IP within this batch |
 | `bttl=30s` | Override this `uniq=` batch lifetime within the server maximum |
+| `health=scope` | Use provider/model-specific exit health and success ranking |
 | `not=1.2.3.4` | Exclude specific public IPs |
 
 Directives are separated by `;` or `,`. An empty username means "no constraints".
@@ -322,44 +323,30 @@ also checked for control characters at the final write boundary.
 
 ### Rotating when a site blocks you
 
-Changing the session name is the simplest rotation. To also make the pool avoid
-that IP for that destination, report it:
+Use the same non-secret `health=` value in the proxy username and feedback
+body. `X-Egress-Slot` and `X-Egress-IP` from the CONNECT response identify the
+measured exit. A failure is keyed by `(scope, public IP)`, so duplicate slots
+cannot immediately offer the same quota-burned IP:
 
 ```sh
 curl -X POST http://egress.example.internal:8080/v1/report \
+  -H 'Authorization: Bearer CONTROL_TOKEN' \
   -H 'Content-Type: application/json' \
-  -d '{"session":"job-1","target":"api.example.com","reason":"http_403","cooldown":"30m"}'
+  -d '{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"opencode-zen.deepseek-v4-flash-0731","reason":"zen_free_quota","cooldown":"24h"}'
 ```
 
-The pool then:
+Report a successful measured IP to put it in the bounded, least-loaded ring:
 
-1. unbinds the session, so the next request picks a different slot, and
-2. puts that slot on cooldown **for that destination only** — blocks are usually
-   per-site, so the IP stays useful everywhere else.
-
-```python
-import requests
-
-EGRESS = "egress.example.internal"
-API = f"http://{EGRESS}:8080"
-
-def proxies(session: str) -> dict:
-    url = f"http://sess={session};ttl=600:x@{EGRESS}:3128"
-    return {"http": url, "https": url}
-
-def fetch(url: str, session: str, attempts: int = 5):
-    for _ in range(attempts):
-        response = requests.get(url, proxies=proxies(session), timeout=30)
-        if response.status_code not in (403, 429):
-            return response
-        # Tell the pool this exit is burnt for this target, then retry.
-        requests.post(f"{API}/v1/report", timeout=10, json={
-            "session": session,
-            "target": url,
-            "reason": f"http_{response.status_code}",
-        })
-    raise RuntimeError(f"still blocked after {attempts} attempts: {url}")
+```sh
+curl -X POST http://egress.example.internal:8080/v1/prefer \
+  -H 'Authorization: Bearer CONTROL_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"slot":"us-lax-wg-001","public_ip":"203.0.113.11","scope":"opencode-zen.deepseek-v4-flash-0731","ttl":"30m"}'
 ```
+
+Active failures dominate later success reports until cooldown expiry. Equal-load
+successes rotate instead of hot-pinning the oldest IP. Both cooldowns and
+preferred rings persist with the measured-IP inventory.
 
 ## Control API
 
@@ -379,7 +366,8 @@ Bound to an internal address, optionally protected by a bearer token.
 | `GET /v1/sessions/NAME` | Same as `whoami`, path form |
 | `POST /v1/sessions/NAME/rotate` | Force the next request onto a new slot |
 | `DELETE /v1/sessions/NAME` | Same as rotate |
-| `POST /v1/report` | Report a block: rotates and applies a cooldown |
+| `POST /v1/report` | Cool one measured public IP for a health scope |
+| `POST /v1/prefer` | Record a successful measured public IP for a health scope |
 
 ## Design notes
 

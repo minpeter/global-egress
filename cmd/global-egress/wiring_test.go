@@ -47,6 +47,12 @@ func TestConfigLimitsReachThePool(t *testing.T) {
 	if opts.Cooldown != cfg.Pool.Cooldown {
 		t.Error("cooldown does not reach the pool")
 	}
+	if opts.PreferredTTL != cfg.Pool.PreferredTTL {
+		t.Error("preferred_ttl does not reach the pool")
+	}
+	if opts.PreferredMax != cfg.Pool.PreferredMax {
+		t.Error("preferred_max does not reach the pool")
+	}
 	if opts.MaxBatchTTL != cfg.Pool.MaxBatchTTL {
 		t.Error("max_batch_ttl does not reach the pool")
 	}

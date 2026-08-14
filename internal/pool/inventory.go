@@ -542,10 +542,11 @@ func (p *Pool) Probe(ctx context.Context, opts ProbeOptions) []ProbeResult {
 
 // inventoryFile is the on-disk shape of the measured inventory.
 type inventoryFile struct {
-	Version    int                    `json:"version"`
-	SavedAt    time.Time              `json:"saved_at"`
-	IPCheckURL string                 `json:"ip_check_url,omitempty"`
-	Slots      map[string]inventoryIP `json:"slots"`
+	Version    int                        `json:"version"`
+	SavedAt    time.Time                  `json:"saved_at"`
+	IPCheckURL string                     `json:"ip_check_url,omitempty"`
+	Slots      map[string]inventoryIP     `json:"slots"`
+	Health     map[string]inventoryHealth `json:"health,omitempty"`
 }
 
 type inventoryIP struct {
@@ -553,15 +554,29 @@ type inventoryIP struct {
 	CheckedAt time.Time `json:"checked_at"`
 }
 
+type inventoryHealth struct {
+	Preferred []inventoryPreferred `json:"preferred,omitempty"`
+	Cooldowns map[string]time.Time `json:"cooldowns,omitempty"`
+}
+
+type inventoryPreferred struct {
+	Slot      string    `json:"slot"`
+	PublicIP  string    `json:"public_ip"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // SaveInventory persists measured public IPs so a restart does not have to
 // re-probe every slot.
 func (p *Pool) SaveInventory(path string) error {
 	p.mu.Lock()
+	now := time.Now()
+	p.expireLocked(now)
 	file := inventoryFile{
-		Version:    1,
-		SavedAt:    time.Now(),
+		Version:    2,
+		SavedAt:    now,
 		IPCheckURL: p.opts.IPCheckURL,
 		Slots:      make(map[string]inventoryIP),
+		Health:     make(map[string]inventoryHealth),
 	}
 	for id, state := range p.slots {
 		if state.publicIP.IsValid() {
@@ -571,9 +586,30 @@ func (p *Pool) SaveInventory(path string) error {
 			}
 		}
 	}
+	for scope, preferred := range p.preferred {
+		entry := file.Health[scope]
+		for _, pref := range preferred.slots {
+			entry.Preferred = append(entry.Preferred, inventoryPreferred{
+				Slot:      pref.slotID,
+				PublicIP:  pref.publicIP.String(),
+				ExpiresAt: pref.expiresAt,
+			})
+		}
+		file.Health[scope] = entry
+	}
+	for scope, byIP := range p.ipCooldowns {
+		entry := file.Health[scope]
+		if entry.Cooldowns == nil {
+			entry.Cooldowns = make(map[string]time.Time)
+		}
+		for ip, until := range byIP {
+			entry.Cooldowns[ip.String()] = until
+		}
+		file.Health[scope] = entry
+	}
 	p.mu.Unlock()
 
-	if len(file.Slots) == 0 {
+	if len(file.Slots) == 0 && len(file.Health) == 0 {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -623,7 +659,45 @@ func (p *Pool) LoadInventory(path string) (int, error) {
 		p.setPublicIPLocked(state, addr, entry.CheckedAt)
 		restored++
 	}
+	now := time.Now()
+	for scope, health := range file.Health {
+		for _, pref := range health.Preferred {
+			if !now.Before(pref.ExpiresAt) {
+				continue
+			}
+			state := p.slots[pref.Slot]
+			ip, err := netip.ParseAddr(pref.PublicIP)
+			if err != nil || state == nil || state.publicIP != ip {
+				continue
+			}
+			set := p.preferred[scope]
+			if set == nil {
+				set = &preferredSet{}
+				p.preferred[scope] = set
+			}
+			set.remember(pref.Slot, ip, pref.ExpiresAt, p.opts.PreferredMax)
+		}
+		for rawIP, until := range health.Cooldowns {
+			if !now.Before(until) {
+				continue
+			}
+			ip, err := netip.ParseAddr(rawIP)
+			if err != nil || !p.hasMeasuredIPLocked(ip) {
+				continue
+			}
+			p.setIPCooldownLocked(scope, ip, until)
+		}
+	}
 	return restored, nil
+}
+
+func (p *Pool) hasMeasuredIPLocked(ip netip.Addr) bool {
+	for _, state := range p.slots {
+		if state.publicIP == ip {
+			return true
+		}
+	}
+	return false
 }
 
 // UniquePublicIPs lists the distinct measured public addresses.

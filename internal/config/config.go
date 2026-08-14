@@ -134,6 +134,10 @@ type PoolConfig struct {
 	MaxUniqueBatches int `yaml:"max_unique_batches"`
 	// Cooldown is the default per-target cooldown applied by a report.
 	Cooldown time.Duration `yaml:"cooldown"`
+	// PreferredTTL is how long a destination remembers a last-good slot.
+	PreferredTTL time.Duration `yaml:"preferred_ttl"`
+	// PreferredMax is how many last-good slots a destination keeps.
+	PreferredMax int `yaml:"preferred_max"`
 	// IdleTimeout closes tunnels unused for this long.
 	IdleTimeout time.Duration `yaml:"idle_timeout"`
 	// HandshakeTimeout bounds bringing a tunnel up.
@@ -216,6 +220,8 @@ func Default() Config {
 			MaxBatchTTL:         15 * time.Minute,
 			MaxUniqueBatches:    10_000,
 			Cooldown:            15 * time.Minute,
+			PreferredTTL:        30 * time.Minute,
+			PreferredMax:        8,
 			IdleTimeout:         10 * time.Minute,
 			HandshakeTimeout:    12 * time.Second,
 			DialAttempts:        3,

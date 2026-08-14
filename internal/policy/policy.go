@@ -17,6 +17,7 @@
 //	sess=name     sticky: reuse the same slot for this session
 //	ttl=600       session lifetime in seconds (or Go duration, e.g. "10m")
 //	uniq=batch    never reuse a public IP within this batch
+//	health=scope  select using destination/model-specific exit health
 //	not=1.2.3.4   exclude these public IPs
 //
 // Multiple values for cc, city and not are separated by "|". Directives are
@@ -58,6 +59,9 @@ type Policy struct {
 	// BatchTTL overrides the configured unique-batch lifetime. Zero uses the
 	// server default.
 	BatchTTL time.Duration
+	// HealthScope selects the destination/model-specific health history used
+	// for this request. It is an opaque, non-secret token shared with feedback.
+	HealthScope string
 	// ExcludeIPs lists public IPs the client refuses.
 	ExcludeIPs []netip.Addr
 }
@@ -67,7 +71,7 @@ type Policy struct {
 func (p Policy) IsZero() bool {
 	return !p.AnyExit && len(p.Countries) == 0 && len(p.Cities) == 0 && p.Slot == "" &&
 		p.Session == "" && p.TTL == 0 && p.UniqueBatch == "" && p.BatchTTL == 0 &&
-		len(p.ExcludeIPs) == 0
+		p.HealthScope == "" && len(p.ExcludeIPs) == 0
 }
 
 // String renders the policy in the same syntax it is parsed from. It never
@@ -101,6 +105,9 @@ func (p Policy) String() string {
 	if p.BatchTTL > 0 {
 		parts = append(parts, "bttl="+p.BatchTTL.String())
 	}
+	if p.HealthScope != "" {
+		parts = append(parts, "health="+p.HealthScope)
+	}
 	for _, ip := range p.ExcludeIPs {
 		parts = append(parts, "not="+ip.String())
 	}
@@ -117,15 +124,24 @@ func (p Policy) String() string {
 // addresses. It retains their count, which is enough to diagnose policy shape.
 func (p Policy) LogString() string {
 	excluded := len(p.ExcludeIPs)
+	hasHealthScope := p.HealthScope != ""
 	p.ExcludeIPs = nil
+	p.HealthScope = ""
 	rendered := p.String()
-	if excluded == 0 {
+	var suffixes []string
+	if hasHealthScope {
+		suffixes = append(suffixes, "health=present")
+	}
+	if excluded > 0 {
+		suffixes = append(suffixes, fmt.Sprintf("not_count=%d", excluded))
+	}
+	if len(suffixes) == 0 {
 		return rendered
 	}
 	if rendered == "(none)" {
-		return fmt.Sprintf("not_count=%d", excluded)
+		return strings.Join(suffixes, ";")
 	}
-	return fmt.Sprintf("%s;not_count=%d", rendered, excluded)
+	return rendered + ";" + strings.Join(suffixes, ";")
 }
 
 // MaxUsernameLen bounds the username we are willing to parse.
@@ -201,6 +217,8 @@ func Parse(username string) (Policy, error) {
 				return Policy{}, fmt.Errorf("policy: bttl must be positive")
 			}
 			p.BatchTTL = ttl
+		case "health":
+			p.HealthScope = value
 		case "not", "exclude":
 			for _, item := range strings.Split(value, "|") {
 				addr, err := netip.ParseAddr(strings.TrimSpace(item))
@@ -236,6 +254,7 @@ func (p *Policy) validate() error {
 		"session":      p.Session,
 		"slot":         p.Slot,
 		"unique batch": p.UniqueBatch,
+		"health scope": p.HealthScope,
 	} {
 		if value != "" && !isSafeOpaqueToken(value) {
 			return fmt.Errorf("policy: %s contains unsafe characters", name)

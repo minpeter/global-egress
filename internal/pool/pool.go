@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/minpeter/global-egress/internal/catalog"
+	"github.com/minpeter/global-egress/internal/georoute"
 	"github.com/minpeter/global-egress/internal/policy"
 	"github.com/minpeter/global-egress/internal/socksdial"
 	"github.com/minpeter/global-egress/internal/wgtunnel"
@@ -46,6 +47,9 @@ var (
 	ErrPolicy = errors.New("pool: policy exceeds configured limits")
 	// ErrSessionFull means the sticky-session map reached its configured cap.
 	ErrSessionFull = errors.New("pool: active sticky-session limit reached")
+	// ErrIdentityMismatch means feedback named a slot whose measured public IP
+	// differs from the identity observed by the client.
+	ErrIdentityMismatch = errors.New("pool: egress identity mismatch")
 )
 
 // Options configures a Pool.
@@ -79,6 +83,14 @@ type Options struct {
 	MaxUniqueBatches int
 	// Cooldown is the default per-target cooldown applied by Report.
 	Cooldown time.Duration
+	// PreferredTTL is how long a destination remembers a last-good slot.
+	// Zero uses the default. Preferred slots are tried first on the next
+	// Acquire for that destination, then the usual random pick.
+	PreferredTTL time.Duration
+	// PreferredMax is how many last-good slots a destination keeps.
+	// Concurrent requests spread across the ring instead of piling onto one
+	// IP and burning its quota together. Zero uses the default.
+	PreferredMax int
 	// IdleTimeout closes tunnels that have served nothing for this long.
 	// Zero disables idle eviction.
 	IdleTimeout time.Duration
@@ -143,6 +155,12 @@ func (o *Options) applyDefaults() {
 	}
 	if o.Cooldown <= 0 {
 		o.Cooldown = 15 * time.Minute
+	}
+	if o.PreferredTTL <= 0 {
+		o.PreferredTTL = 30 * time.Minute
+	}
+	if o.PreferredMax <= 0 {
+		o.PreferredMax = 8
 	}
 	if o.HandshakeTimeout <= 0 {
 		o.HandshakeTimeout = 12 * time.Second
@@ -235,6 +253,21 @@ func (s *slotState) coolingDown(target string, now time.Time) bool {
 type session struct {
 	slotID    string
 	expiresAt time.Time
+}
+
+// preferredExit is one last-good slot for a destination.
+// CONNECT success is not enough: the client reports this after a 200.
+type preferredExit struct {
+	slotID    string
+	publicIP  netip.Addr
+	expiresAt time.Time
+}
+
+// preferredSet is the ring of last-good slots for one destination.
+// Concurrent requests pick the least-loaded member so they do not all
+// burn the same exit quota.
+type preferredSet struct {
+	slots []preferredExit
 }
 
 type batch struct {
@@ -335,6 +368,12 @@ type Pool struct {
 	// pendingSessions counts in-flight acquisitions by new session name.
 	pendingSessions map[string]int
 	batches         map[string]*batch
+	// preferred maps a destination host to last-good slots a client
+	// reported as actually serving that destination (CONNECT success is not enough).
+	preferred map[string]*preferredSet
+	// ipCooldowns applies target health to the measured public IP rather than
+	// one slot, so duplicate slots cannot re-offer the same quota-burned exit.
+	ipCooldowns map[string]map[netip.Addr]time.Time
 	// entries are the WireGuard tunnels that relay-socks slots ride on. Empty in
 	// pure WireGuard mode.
 	entries []*entryState
@@ -422,6 +461,8 @@ func NewWithSpecs(specs []Spec, entries []catalog.Slot, opts Options) (*Pool, er
 		sessions:              make(map[string]*session),
 		pendingSessions:       make(map[string]int),
 		batches:               make(map[string]*batch),
+		preferred:             make(map[string]*preferredSet),
+		ipCooldowns:           make(map[string]map[netip.Addr]time.Time),
 		statAcquiredByCountry: make(map[string]uint64),
 	}
 	for _, spec := range specs {
@@ -595,6 +636,9 @@ func (p *Pool) pick(
 			p.opts.MaxBatchTTL,
 		)
 	}
+	if pol.HealthScope != "" {
+		target = pol.HealthScope
+	}
 
 	if p.opts.MaxConcurrentConns > 0 &&
 		p.leased+p.pendingLeases >= p.opts.MaxConcurrentConns {
@@ -614,6 +658,18 @@ func (p *Pool) pick(
 			}
 			// The pinned slot became unusable: fall through and re-pick.
 			delete(p.sessions, pol.Session)
+		}
+	}
+
+	// A destination's last-good slots beat a unique-batch walk. CONNECT
+	// success is not enough — Prefer records this after the origin answered.
+	// Preferred slots ignore uniq= so a 200'd IP can be reused; dest cooldown
+	// still applies so a later 429 drops that member.
+	if target != "" {
+		if state, reservation, err := p.pickPreferredLocked(pol, target, now); err != nil {
+			return nil, false, nil, err
+		} else if state != nil {
+			return state, false, reservation, nil
 		}
 	}
 
@@ -638,7 +694,7 @@ func (p *Pool) pick(
 		}
 	}
 	if len(ready) > 0 {
-		state := ready[p.rng.IntN(len(ready))]
+		state := pickNearestReady(ready, p.rng)
 		reservation, err := p.reserveAcquisitionLocked(pol, state, now)
 		if err != nil {
 			return nil, false, nil, err
@@ -652,7 +708,7 @@ func (p *Pool) pick(
 	if err := p.reserveCapacityLocked(); err != nil {
 		return nil, false, nil, err
 	}
-	state := candidates[p.rng.IntN(len(candidates))]
+	state := pickNearestReady(candidates, p.rng)
 	reservation, err := p.reserveAcquisitionLocked(pol, state, now)
 	if err != nil {
 		return nil, false, nil, err
@@ -678,6 +734,9 @@ func (p *Pool) eligibleLocked(state *slotState, pol policy.Policy, target string
 		return false
 	}
 	if state.coolingDown(target, now) {
+		return false
+	}
+	if p.ipCoolingDownLocked(target, state.publicIP, now) {
 		return false
 	}
 	// Spread load: an exit already at its connection limit is not a candidate,
@@ -711,6 +770,165 @@ func (p *Pool) eligibleLocked(state *slotState, pol policy.Policy, target string
 		}
 	}
 	return true
+}
+
+// nearbyHuntRegions are the exits a KR/JP lab should try first when walking
+// unused IPs. A random US/EU first hop is why one-shot hunts miss 2s TTFT.
+var nearbyHuntRegions = map[georoute.Region]struct{}{
+	georoute.EastAsia:  {},
+	georoute.SouthAsia: {},
+}
+
+func pickNearestReady(ready []*slotState, rng *rand.Rand) *slotState {
+	if len(ready) == 1 {
+		return ready[0]
+	}
+	near := ready[:0:0]
+	for _, state := range ready {
+		if _, ok := nearbyHuntRegions[georoute.RegionOf(state.spec.Country)]; ok {
+			near = append(near, state)
+		}
+	}
+	if len(near) > 0 {
+		return near[rng.IntN(len(near))]
+	}
+	return ready[rng.IntN(len(ready))]
+}
+
+// eligiblePreferredLocked is eligibleLocked without the unique-batch check.
+// A 200'd exit must stay reusable even if this request's uniq= already saw it.
+func (p *Pool) eligiblePreferredLocked(state *slotState, pol policy.Policy, target string, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	withoutBatch := pol
+	withoutBatch.UniqueBatch = ""
+	return p.eligibleLocked(state, withoutBatch, target, now)
+}
+
+func (p *Pool) pickPreferredLocked(pol policy.Policy, target string, now time.Time) (*slotState, *acquisitionReservation, error) {
+	set := p.preferred[target]
+	if set == nil {
+		return nil, nil, nil
+	}
+	set.prune(now)
+	var best *slotState
+	bestLoad := int(^uint(0) >> 1)
+	kept := set.slots[:0]
+	for _, pref := range set.slots {
+		state, ok := p.slots[pref.slotID]
+		if !ok ||
+			!pref.publicIP.IsValid() ||
+			state.publicIP != pref.publicIP ||
+			!p.eligiblePreferredLocked(state, pol, target, now) {
+			continue
+		}
+		kept = append(kept, pref)
+		load := state.leases + state.pendingLeases
+		if best == nil || load < bestLoad {
+			best = state
+			bestLoad = load
+		}
+	}
+	set.slots = kept
+	if len(set.slots) == 0 {
+		delete(p.preferred, target)
+		return nil, nil, nil
+	}
+	if best == nil {
+		return nil, nil, nil
+	}
+	set.rotateToTail(best.spec.ID)
+	reservation, err := p.reserveAcquisitionLocked(pol, best, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return best, reservation, nil
+}
+
+func (s *preferredSet) remember(slotID string, publicIP netip.Addr, until time.Time, max int) {
+	if max <= 0 {
+		max = 8
+	}
+	for i, pref := range s.slots {
+		if pref.publicIP == publicIP {
+			s.slots[i].slotID = slotID
+			s.slots[i].expiresAt = until
+			return
+		}
+	}
+	s.slots = append(s.slots, preferredExit{
+		slotID:    slotID,
+		publicIP:  publicIP,
+		expiresAt: until,
+	})
+	if len(s.slots) > max {
+		s.slots = s.slots[len(s.slots)-max:]
+	}
+}
+
+func (s *preferredSet) removeIP(publicIP netip.Addr) {
+	kept := s.slots[:0]
+	for _, pref := range s.slots {
+		if pref.publicIP != publicIP {
+			kept = append(kept, pref)
+		}
+	}
+	s.slots = kept
+}
+
+func (s *preferredSet) rotateToTail(slotID string) {
+	for i, pref := range s.slots {
+		if pref.slotID != slotID || i == len(s.slots)-1 {
+			continue
+		}
+		copy(s.slots[i:], s.slots[i+1:])
+		s.slots[len(s.slots)-1] = pref
+		return
+	}
+}
+
+func (s *preferredSet) prune(now time.Time) {
+	kept := s.slots[:0]
+	for _, pref := range s.slots {
+		if now.Before(pref.expiresAt) {
+			kept = append(kept, pref)
+		}
+	}
+	s.slots = kept
+}
+
+func (p *Pool) ipCoolingDownLocked(target string, ip netip.Addr, now time.Time) bool {
+	if target == "" || !ip.IsValid() {
+		return false
+	}
+	byIP := p.ipCooldowns[target]
+	until, ok := byIP[ip]
+	if !ok {
+		return false
+	}
+	if now.Before(until) {
+		return true
+	}
+	delete(byIP, ip)
+	if len(byIP) == 0 {
+		delete(p.ipCooldowns, target)
+	}
+	return false
+}
+
+func (p *Pool) setIPCooldownLocked(target string, ip netip.Addr, until time.Time) {
+	if target == "" || !ip.IsValid() {
+		return
+	}
+	byIP := p.ipCooldowns[target]
+	if byIP == nil {
+		byIP = make(map[netip.Addr]time.Time)
+		p.ipCooldowns[target] = byIP
+	}
+	if current := byIP[ip]; current.Before(until) {
+		byIP[ip] = until
+	}
 }
 
 // reserveCapacityLocked checks whether another tunnel may be opened, closing an
@@ -1190,6 +1408,8 @@ type ReportInput struct {
 	Session string
 	// Slot names the slot directly. Optional when Session is set.
 	Slot string
+	// PublicIP is the exit identity observed on the proxy handshake.
+	PublicIP netip.Addr
 	// Target is the destination host the block was observed on. When empty the
 	// cooldown applies to every destination.
 	Target string
@@ -1227,7 +1447,13 @@ func (p *Pool) Report(in ReportInput) (ReportResult, error) {
 	if !ok {
 		return ReportResult{}, fmt.Errorf("pool: unknown slot %q", slotID)
 	}
-
+	if in.PublicIP.IsValid() && state.publicIP != in.PublicIP {
+		return ReportResult{}, fmt.Errorf(
+			"%w: slot %q public IP does not match",
+			ErrIdentityMismatch,
+			slotID,
+		)
+	}
 	cooldown := in.Cooldown
 	if cooldown <= 0 {
 		cooldown = p.opts.Cooldown
@@ -1239,7 +1465,15 @@ func (p *Pool) Report(in ReportInput) (ReportResult, error) {
 		state.disabledUntil = until
 	} else {
 		state.cooldowns[in.Target] = until
+		p.setIPCooldownLocked(in.Target, state.publicIP, until)
+		if pref, ok := p.preferred[in.Target]; ok {
+			pref.removeIP(state.publicIP)
+			if len(pref.slots) == 0 {
+				delete(p.preferred, in.Target)
+			}
+		}
 	}
+	p.releaseSlotFromBatchesLocked(slotID)
 
 	rotated := false
 	if in.Session != "" {
@@ -1264,6 +1498,82 @@ func (p *Pool) Report(in ReportInput) (ReportResult, error) {
 		Cooldown: cooldown,
 		Rotated:  rotated,
 	}, nil
+}
+
+// PreferInput names a slot that actually served a destination.
+type PreferInput struct {
+	// Slot is the egress that answered. Required.
+	Slot string
+	// PublicIP is the exit identity observed on the proxy handshake.
+	PublicIP netip.Addr
+	// Target is the destination host that succeeded. Required.
+	Target string
+	// TTL overrides the configured preferred lifetime.
+	TTL time.Duration
+}
+
+// PreferResult describes the recorded last-good mapping.
+type PreferResult struct {
+	Slot   string        `json:"slot"`
+	Target string        `json:"target"`
+	Until  time.Time     `json:"preferred_until"`
+	TTL    time.Duration `json:"ttl"`
+}
+
+// Prefer records that a slot actually served a destination so the next
+// Acquire for that host tries it first. CONNECT success is not enough —
+// the client must call this after the origin answered.
+func (p *Pool) Prefer(in PreferInput) (PreferResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if in.Target == "" {
+		return PreferResult{}, fmt.Errorf("pool: prefer requires a target")
+	}
+	if _, ok := p.slots[in.Slot]; !ok {
+		return PreferResult{}, fmt.Errorf("pool: unknown slot %q", in.Slot)
+	}
+	state := p.slots[in.Slot]
+	if !state.publicIP.IsValid() {
+		return PreferResult{}, fmt.Errorf("pool: slot %q has no measured public IP", in.Slot)
+	}
+	if in.PublicIP.IsValid() && state.publicIP != in.PublicIP {
+		return PreferResult{}, fmt.Errorf(
+			"%w: slot %q public IP does not match",
+			ErrIdentityMismatch,
+			in.Slot,
+		)
+	}
+
+	ttl := in.TTL
+	if ttl <= 0 {
+		ttl = p.opts.PreferredTTL
+	}
+	until := time.Now().Add(ttl)
+	set := p.preferred[in.Target]
+	if set == nil {
+		set = &preferredSet{}
+		p.preferred[in.Target] = set
+	}
+	set.remember(in.Slot, state.publicIP, until, p.opts.PreferredMax)
+	p.log.Info("egress preferred",
+		slog.String("slot", in.Slot),
+		slog.Bool("target_scoped", true),
+		slog.Duration("ttl", ttl),
+		slog.Int("preferred_count", len(set.slots)))
+	return PreferResult{Slot: in.Slot, Target: in.Target, Until: until, TTL: ttl}, nil
+}
+
+func (p *Pool) releaseSlotFromBatchesLocked(slotID string) {
+	for name, b := range p.batches {
+		if _, used := b.usedSlots[slotID]; !used {
+			continue
+		}
+		b.release(slotID)
+		if len(b.usedSlots) == 0 {
+			delete(p.batches, name)
+		}
+	}
 }
 
 // SessionInfo describes a sticky session.
@@ -1453,11 +1763,27 @@ func (p *Pool) expireLocked(now time.Time) {
 			delete(p.batches, name)
 		}
 	}
+	for target, set := range p.preferred {
+		set.prune(now)
+		if len(set.slots) == 0 {
+			delete(p.preferred, target)
+		}
+	}
 	for _, state := range p.slots {
 		for target, until := range state.cooldowns {
 			if now.After(until) {
 				delete(state.cooldowns, target)
 			}
+		}
+	}
+	for target, byIP := range p.ipCooldowns {
+		for ip, until := range byIP {
+			if now.After(until) {
+				delete(byIP, ip)
+			}
+		}
+		if len(byIP) == 0 {
+			delete(p.ipCooldowns, target)
 		}
 	}
 }
