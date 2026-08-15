@@ -173,6 +173,29 @@ func runServe(ctx context.Context, args []string) error {
 		defer wg.Done()
 		egressPool.Maintain(serveCtx)
 	}()
+	if cfg.Mode == config.ModeRelaySocks && cfg.Relays.Refresh > 0 {
+		cachePath := cfg.RelayCachePath()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(cfg.Relays.Refresh)
+			defer ticker.Stop()
+			maintainRelaySlots(
+				serveCtx,
+				ticker.C,
+				func(ctx context.Context) (pool.RelayReconcileResult, error) {
+					return refreshRelaySlots(
+						ctx,
+						egressPool,
+						cfg.Relays.URL,
+						cachePath,
+						mullvad.Fetch,
+					)
+				},
+				logger,
+			)
+		}()
+	}
 
 	if cfg.Pool.Preopen > 0 {
 		go preopen(serveCtx, egressPool, cfg.Pool.Preopen, logger)

@@ -123,6 +123,129 @@ func TestNewWithSpecsRejectsDuplicates(t *testing.T) {
 	}
 }
 
+func TestReconcileRelaySlotsReplacesActiveSet(t *testing.T) {
+	p := newRelayPool(t, Options{})
+	const retainedID = "jp-tyo-wg-socks5-001"
+	const removedID = "de-fra-wg-socks5-001"
+	const addedID = "gb-lon-wg-socks5-001"
+	retainedIP := netip.MustParseAddr("192.0.2.10")
+	cooldownUntil := time.Now().Add(time.Hour)
+
+	p.mu.Lock()
+	retained := p.slots[retainedID]
+	retained.publicIP = retainedIP
+	retained.cooldowns["api.example"] = cooldownUntil
+	p.sessions["removed-session"] = &session{
+		slotID:    removedID,
+		expiresAt: time.Now().Add(time.Hour),
+	}
+	p.mu.Unlock()
+
+	next := SpecsFromExits([]ExitSpec{
+		{
+			ID: retainedID, Country: "jp", City: "jp-tyo",
+			SocksAddr: "jp-tyo-wg-socks5-001.changed.example:1080",
+		},
+		{
+			ID: addedID, Country: "gb", City: "gb-lon",
+			SocksAddr: "gb-lon-wg-socks5-001.relays.example:1080",
+		},
+	})
+	result, err := p.ReconcileRelaySlots(next)
+	if err != nil {
+		t.Fatalf("ReconcileRelaySlots: %v", err)
+	}
+	if result.Added != 1 || result.Removed != 2 || result.Retained != 1 {
+		t.Fatalf("result = %+v, want added=1 removed=2 retained=1", result)
+	}
+
+	slots := p.Slots(SlotFilter{})
+	if len(slots) != 2 {
+		t.Fatalf("len(slots) = %d, want 2", len(slots))
+	}
+	if slots[0].ID != addedID || slots[1].ID != retainedID {
+		t.Fatalf("slot IDs = [%s %s], want [%s %s]", slots[0].ID, slots[1].ID, addedID, retainedID)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.slots[retainedID] != retained {
+		t.Fatal("retained slot state was replaced")
+	}
+	if got := retained.spec.SocksAddr; got != next[0].SocksAddr {
+		t.Errorf("retained SocksAddr = %q, want %q", got, next[0].SocksAddr)
+	}
+	if retained.publicIP != retainedIP {
+		t.Errorf("retained public IP = %s, want %s", retained.publicIP, retainedIP)
+	}
+	if got := retained.cooldowns["api.example"]; !got.Equal(cooldownUntil) {
+		t.Errorf("retained cooldown = %s, want %s", got, cooldownUntil)
+	}
+	if _, ok := p.sessions["removed-session"]; ok {
+		t.Error("session pinned to a removed slot was not cleared")
+	}
+}
+
+func TestReconcileRelaySlotsDrainsActiveLease(t *testing.T) {
+	p := newRelayPool(t, Options{})
+	const removedID = "jp-tyo-wg-socks5-001"
+
+	p.mu.Lock()
+	removed := p.slots[removedID]
+	removed.leases = 1
+	p.leased = 1
+	lease := &Lease{
+		pool:  p,
+		state: removed,
+		Slot:  removed.spec,
+	}
+	p.mu.Unlock()
+
+	next := SpecsFromExits([]ExitSpec{{
+		ID:        "gb-lon-wg-socks5-001",
+		Country:   "gb",
+		City:      "gb-lon",
+		SocksAddr: "gb-lon-wg-socks5-001.relays.example:1080",
+	}})
+	if _, err := p.ReconcileRelaySlots(next); err != nil {
+		t.Fatalf("ReconcileRelaySlots: %v", err)
+	}
+
+	p.mu.Lock()
+	_, stillSelectable := p.slots[removedID]
+	leasedBeforeRelease := p.leased
+	p.mu.Unlock()
+	if stillSelectable {
+		t.Fatal("removed slot remains selectable while its old lease drains")
+	}
+	if leasedBeforeRelease != 1 {
+		t.Fatalf("pool leased count = %d, want 1 before release", leasedBeforeRelease)
+	}
+
+	release := make(chan struct{})
+	released := make(chan struct{})
+	go func() {
+		<-release
+		lease.Release()
+		close(released)
+	}()
+	close(release)
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("active lease did not release after its slot was removed")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if removed.leases != 0 {
+		t.Errorf("removed slot leases = %d, want 0", removed.leases)
+	}
+	if p.leased != 0 {
+		t.Errorf("pool leased count = %d, want 0", p.leased)
+	}
+}
+
 func TestSlotsReportKindAndTarget(t *testing.T) {
 	p := newRelayPool(t, Options{})
 	slots := p.Slots(SlotFilter{Country: "jp"})
