@@ -262,13 +262,49 @@ func TestPreferPinsSlotForDestination(t *testing.T) {
 	}
 }
 
-func TestPreferBeatsUniqueBatch(t *testing.T) {
+func TestPreferSkipsSlotUsedInActiveUniqueBatch(t *testing.T) {
 	p := newTestPool(t, Options{BatchTTL: time.Hour, PreferredTTL: time.Hour})
 	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
-	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.11"))
+	setFreshPublicIP(p.slots["us-lax-wg-002"], netip.MustParseAddr("198.51.100.12"))
 
 	p.mu.Lock()
 	if _, err := p.reserveBatchLocked(policy.Policy{UniqueBatch: "b1"}, p.slots["us-lax-wg-001"], time.Now()); err != nil {
+		p.mu.Unlock()
+		t.Fatalf("reserveBatchLocked: %v", err)
+	}
+	p.mu.Unlock()
+
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	state, _, reservation, err := p.pick(
+		policy.Policy{Countries: []string{"us"}, UniqueBatch: "b1"},
+		"opencode.ai",
+	)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
+	if state.spec.ID != "us-lax-wg-002" {
+		t.Fatalf("preferred slot used in active batch = %s, want us-lax-wg-002", state.spec.ID)
+	}
+}
+
+func TestPreferSkipsIPUsedByAnotherSlotInActiveUniqueBatch(t *testing.T) {
+	p := newTestPool(t, Options{BatchTTL: time.Hour, PreferredTTL: time.Hour})
+	sharedIP := netip.MustParseAddr("198.51.100.10")
+	setFreshPublicIP(p.slots["us-lax-wg-001"], sharedIP)
+	setFreshPublicIP(p.slots["us-lax-wg-002"], sharedIP)
+	setFreshPublicIP(p.slots["de-fra-wg-001"], netip.MustParseAddr("198.51.100.11"))
+
+	p.mu.Lock()
+	for id, state := range p.slots {
+		if id != "us-lax-wg-001" && id != "us-lax-wg-002" && id != "de-fra-wg-001" {
+			state.disabledUntil = time.Now().Add(time.Hour)
+		}
+	}
+	if _, err := p.reserveBatchLocked(policy.Policy{UniqueBatch: "b1"}, p.slots["us-lax-wg-002"], time.Now()); err != nil {
 		p.mu.Unlock()
 		t.Fatalf("reserveBatchLocked: %v", err)
 	}
@@ -283,8 +319,50 @@ func TestPreferBeatsUniqueBatch(t *testing.T) {
 		t.Fatalf("pick: %v", err)
 	}
 	t.Cleanup(func() { p.rollbackAcquisition(reservation) })
-	if state.spec.ID != "us-lax-wg-001" {
-		t.Fatalf("preferred slot must reuse through uniq=, got %s", state.spec.ID)
+	if state.spec.ID != "de-fra-wg-001" {
+		t.Fatalf("preferred IP used in active batch selected slot %s, want de-fra-wg-001", state.spec.ID)
+	}
+}
+
+func TestPreferRemainsEligibleForLaterUniqueBatch(t *testing.T) {
+	p := newTestPool(t, Options{BatchTTL: time.Hour, PreferredTTL: time.Hour})
+	setFreshPublicIP(p.slots["us-lax-wg-001"], netip.MustParseAddr("198.51.100.10"))
+	setFreshPublicIP(p.slots["us-lax-wg-002"], netip.MustParseAddr("198.51.100.12"))
+
+	p.mu.Lock()
+	if _, err := p.reserveBatchLocked(policy.Policy{UniqueBatch: "b1"}, p.slots["us-lax-wg-001"], time.Now()); err != nil {
+		p.mu.Unlock()
+		t.Fatalf("reserveBatchLocked: %v", err)
+	}
+	p.mu.Unlock()
+
+	if _, err := p.Prefer(PreferInput{Slot: "us-lax-wg-001", Target: "opencode.ai"}); err != nil {
+		t.Fatalf("Prefer: %v", err)
+	}
+
+	first, _, firstReservation, err := p.pick(
+		policy.Policy{Countries: []string{"us"}, UniqueBatch: "b1"},
+		"opencode.ai",
+	)
+	if err != nil {
+		t.Fatalf("first pick: %v", err)
+	}
+	second, _, secondReservation, err := p.pick(
+		policy.Policy{Countries: []string{"us"}, UniqueBatch: "b2"},
+		"opencode.ai",
+	)
+	if err != nil {
+		t.Fatalf("later-batch pick: %v", err)
+	}
+	t.Cleanup(func() {
+		p.rollbackAcquisition(firstReservation)
+		p.rollbackAcquisition(secondReservation)
+	})
+	if first.spec.ID != "us-lax-wg-002" {
+		t.Fatalf("first batch selected %s, want us-lax-wg-002", first.spec.ID)
+	}
+	if second.spec.ID != "us-lax-wg-001" {
+		t.Fatalf("preferred slot became ineligible for later batch: %s", second.spec.ID)
 	}
 }
 

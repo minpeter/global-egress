@@ -662,8 +662,8 @@ func (p *Pool) pick(
 
 	// A destination's last-good slots beat a unique-batch walk. CONNECT
 	// success is not enough — Prefer records this after the origin answered.
-	// Preferred slots ignore uniq= so a 200'd IP can be reused; dest cooldown
-	// still applies so a later 429 drops that member.
+	// Preferred slots remain in the ring when an active unique batch temporarily
+	// excludes them, but selection still applies the batch's slot/IP rules.
 	if target != "" {
 		if state, reservation, err := p.pickPreferredLocked(pol, target, now); err != nil {
 			return nil, false, nil, err
@@ -810,6 +810,9 @@ func (p *Pool) pickPreferredLocked(pol policy.Policy, target string, now time.Ti
 			continue
 		}
 		kept = append(kept, pref)
+		if !p.eligibleLocked(state, pol, target, now) {
+			continue
+		}
 		load := state.leases + state.pendingLeases
 		if best == nil || load < bestLoad {
 			best = state
