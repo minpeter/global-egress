@@ -1,0 +1,52 @@
+# global-egress TOML configuration. Protect this file: provider URLs may contain credentials.
+mode = "relay-socks"
+state_dir = "/var/lib/global-egress"
+
+[listen]
+socks5 = "10.0.0.70:1080"
+http = "10.0.0.70:3128"
+control = "10.0.0.70:8080"
+
+[access]
+allowed_clients = ["10.0.0.0/24"]
+password_file = "/etc/global-egress/proxy-password"
+require_auth = true
+require_policy = true
+control_token_file = "/etc/global-egress/control-token"
+
+[pool]
+preopen = 3
+
+[destinations]
+allowed_ports = []
+
+[log]
+level = "info"
+format = "text"
+
+[[providers]]
+id = "mullvad"
+type = "mullvad"
+enabled = true
+
+[providers.catalog]
+path = "/var/lib/global-egress/wireguard"
+
+[providers.relays]
+url = "https://api.mullvad.net/www/relays/wireguard/"
+cache = "relays.json"
+refresh = "24h"
+
+[providers.entries]
+slots = ["jp-tyo-wg-001", "nl-ams-wg-001", "us-lax-wg-001"]
+auto = 2
+
+# Add direct authenticated SOCKS providers in the same TOML file when needed.
+# [[providers]]
+# id = "direct-example"
+# type = "socks5"
+# enabled = true
+# [providers.socks5]
+# url = "socks5h://username:password@proxy.example:1080"
+# country = "us"
+# city = "us-nyc"

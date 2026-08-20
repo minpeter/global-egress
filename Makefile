@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
 # Local development config; ignored by git.
-LOCAL_CONFIG ?= config.local.yaml
+LOCAL_CONFIG ?= config.local.toml
 
 GOBIN := $(shell go env GOPATH)/bin
 GOFILES := $(shell find cmd internal -name '*.go')

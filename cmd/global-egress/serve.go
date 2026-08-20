@@ -23,7 +23,7 @@ import (
 
 func runServe(ctx context.Context, args []string) error {
 	fs := newFlagSet("serve")
-	configPath := fs.String("config", "/etc/global-egress/config.yaml", "configuration file")
+	configPath := fs.String("config", "/etc/global-egress/config.toml", "configuration file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -35,19 +35,22 @@ func runServe(ctx context.Context, args []string) error {
 	logger := newLogger(cfg.Log)
 	startedAt := time.Now()
 
-	bundle, err := catalog.Load(cfg.Catalog.Path)
-	if err != nil {
-		return err
-	}
-	logger.Info("catalog loaded",
-		slog.String("path", cfg.Catalog.Path),
-		slog.Int("slots", len(bundle.Slots)),
-		slog.Int("countries", len(bundle.Countries())),
-		slog.Int("cities", len(bundle.Cities())),
-		slog.Int("distinct_keys", bundle.DistinctKeys))
-	if bundle.DistinctKeys > 1 {
-		logger.Warn("bundle mixes several provider devices; check the concurrency terms of your subscription",
+	bundle := &catalog.Bundle{}
+	if cfg.Catalog.Path != "" {
+		bundle, err = catalog.Load(cfg.Catalog.Path)
+		if err != nil {
+			return err
+		}
+		logger.Info("catalog loaded",
+			slog.String("path", cfg.Catalog.Path),
+			slog.Int("slots", len(bundle.Slots)),
+			slog.Int("countries", len(bundle.Countries())),
+			slog.Int("cities", len(bundle.Cities())),
 			slog.Int("distinct_keys", bundle.DistinctKeys))
+		if bundle.DistinctKeys > 1 {
+			logger.Warn("bundle mixes several provider devices; check the concurrency terms of your subscription",
+				slog.Int("distinct_keys", bundle.DistinctKeys))
+		}
 	}
 
 	specs, entrySlots, err := buildSlots(ctx, cfg, bundle, logger)
@@ -173,7 +176,7 @@ func runServe(ctx context.Context, args []string) error {
 		defer wg.Done()
 		egressPool.Maintain(serveCtx)
 	}()
-	if cfg.Mode == config.ModeRelaySocks && cfg.Relays.Refresh > 0 {
+	if cfg.Mode == config.ModeRelaySocks && cfg.Relays.Refresh > 0 && mullvadConfigured(cfg) {
 		cachePath := cfg.RelayCachePath()
 		wg.Add(1)
 		go func() {
@@ -258,38 +261,82 @@ func newLogger(cfg config.LogConfig) *slog.Logger {
 // becomes a slot of its own.
 func buildSlots(ctx context.Context, cfg config.Config, bundle *catalog.Bundle, logger *slog.Logger) ([]pool.Spec, []catalog.Slot, error) {
 	if cfg.Mode == config.ModeWireGuard {
-		logger.Info("mode: wireguard (one tunnel per slot)",
-			slog.Int("slots", len(bundle.Slots)))
-		return pool.SpecsFromBundle(bundle), nil, nil
+		specs := pool.SpecsFromBundle(bundle)
+		for _, provider := range cfg.Providers() {
+			if provider.Type() != config.ProviderSOCKS5 || !provider.Enabled() {
+				continue
+			}
+			direct, err := pool.NewDirectSocksSpec(pool.DirectSocksOptions{ID: provider.ID(), Country: provider.Country(), City: provider.City(), URL: provider.SOCKSURL()})
+			if err != nil {
+				return nil, nil, fmt.Errorf("external provider %q: %w", provider.ID(), err)
+			}
+			specs = append(specs, direct)
+		}
+		logger.Info("mode: wireguard (one tunnel per slot)", slog.Int("slots", len(specs)))
+		if len(specs) == 0 {
+			return nil, nil, errors.New("providers contain no usable enabled providers")
+		}
+		return specs, nil, nil
 	}
 
-	cachePath := cfg.RelayCachePath()
-	list, fetched, err := mullvad.LoadOrFetch(ctx, cfg.Relays.URL, cachePath, cfg.Relays.Refresh)
-	if err != nil {
-		return nil, nil, fmt.Errorf("relay list: %w", err)
+	providers := cfg.Providers()
+	var specs []pool.Spec
+	var entrySlots []catalog.Slot
+	mullvadEnabled := false
+	for _, provider := range providers {
+		if provider.Type() == config.ProviderMullvad && provider.Enabled() {
+			mullvadEnabled = true
+			cachePath := cfg.RelayCachePath()
+			list, fetched, err := mullvad.LoadOrFetch(ctx, cfg.Relays.URL, cachePath, cfg.Relays.Refresh)
+			if err != nil {
+				return nil, nil, fmt.Errorf("relay list: %w", err)
+			}
+			relays := list.Usable()
+			if len(relays) == 0 {
+				return nil, nil, fmt.Errorf("relay list contains no usable relays")
+			}
+			specs = append(specs, pool.SpecsFromExits(exitsFromRelays(relays))...)
+			logger.Info("Mullvad relay slots loaded",
+				slog.Int("exits", len(relays)),
+				slog.Int("countries", len(list.Countries())),
+				slog.Int("cities", len(list.Cities())),
+				slog.Bool("relay_list_refreshed", fetched))
+		}
+		if provider.Type() == config.ProviderSOCKS5 && provider.Enabled() {
+			direct, err := pool.NewDirectSocksSpec(pool.DirectSocksOptions{
+				ID: provider.ID(), Country: provider.Country(), City: provider.City(), URL: provider.SOCKSURL(),
+			})
+			if err != nil {
+				return nil, nil, fmt.Errorf("external provider %q: %w", provider.ID(), err)
+			}
+			specs = append(specs, direct)
+		}
 	}
-	relays := list.Usable()
-	if len(relays) == 0 {
-		return nil, nil, fmt.Errorf("relay list contains no usable relays")
+	if mullvadEnabled {
+		var err error
+		entrySlots, err = resolveEntries(bundle, cfg.Entries.Slots, cfg.Entries.Auto)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-
-	entrySlots, err := resolveEntries(bundle, cfg.Entries.Slots, cfg.Entries.Auto)
-	if err != nil {
-		return nil, nil, err
+	if len(specs) == 0 {
+		return nil, nil, errors.New("providers contain no usable enabled providers")
 	}
-
 	entryNames := make([]string, 0, len(entrySlots))
 	for _, slot := range entrySlots {
 		entryNames = append(entryNames, slot.ID)
 	}
-	logger.Info("mode: relay-socks (shared entry tunnels, one exit per relay)",
-		slog.Int("exits", len(relays)),
-		slog.Int("countries", len(list.Countries())),
-		slog.Int("cities", len(list.Cities())),
-		slog.Bool("relay_list_refreshed", fetched),
-		slog.String("entries", strings.Join(entryNames, ",")))
+	logger.Info("mode: relay-socks", slog.Int("exits", len(specs)), slog.String("entries", strings.Join(entryNames, ",")))
+	return specs, entrySlots, nil
+}
 
-	return pool.SpecsFromExits(exitsFromRelays(relays)), entrySlots, nil
+func mullvadConfigured(cfg config.Config) bool {
+	for _, provider := range cfg.Providers() {
+		if provider.Enabled() && provider.Type() == config.ProviderMullvad {
+			return true
+		}
+	}
+	return false
 }
 
 // exitsFromRelays is the seam between the provider and the pool: it is the only
@@ -301,6 +348,7 @@ func exitsFromRelays(relays []mullvad.Relay) []pool.ExitSpec {
 			ID:        relay.SlotID(),
 			Country:   relay.Country,
 			City:      relay.City(),
+			Provider:  "mullvad",
 			SocksAddr: relay.SocksAddr(),
 		})
 	}

@@ -26,7 +26,7 @@ internal/
   georoute/            # coarse entry<->exit geographic prior, only until measured
   mullvad/             # provider: relay list + per-relay SOCKS proxy
   nordvpn/             # provider: server list -> catalog.Slot
-  config/              # YAML load + validate
+  config/              # TOML load + validate
 deploy/                # systemd, OpenRC, Docker/Compose, collector, Grafana
 docs/                  # operations.md (observed behaviour), capacity.md (measurements)
 scripts/               # entry-bench.py, verify.py, tegami.mts (release manager)
@@ -110,7 +110,7 @@ mode; `pool.Acquire` is the hot path; `proxy.Deps.connectUpstream` calls it.
 - Do not bulk-probe a provider with one key unpaced. That trips the per-key
   association limit and blocks the key for hours (`docs/capacity.md`).
 - Never commit a bundle, `.conf`, or key. `.gitignore` covers `.secrets/`, `*.zip`,
-  `*.conf`, `*.local.yaml`, `.local-state/`.
+  `*.conf`, `*.local.toml`, `.local-state/`.
 - Do not add a formatter or lint config: `.golangci.yaml` owns gofumpt, goimports
   and the linter set, and CI runs the same pinned binary.
 
@@ -120,7 +120,7 @@ mode; `pool.Acquire` is the hot path; `proxy.Deps.connectUpstream` calls it.
 make check       # fmtcheck + vet + lint + test; run before pushing
 make build       # ./bin/global-egress
 make race        # go test -race ./...  (pool hands slots to concurrent requests)
-make run         # serve with config.local.yaml
+make run         # serve with config.local.toml
 make tools       # install pinned golangci-lint v2.12.2 into $(go env GOPATH)/bin
 make outdated    # only modules actually built against
 ```
@@ -141,7 +141,7 @@ darwin/arm64), `vulncheck`.
 - Two independent budgets: `pool.max_active` (tunnels *up*) and
   `pool.new_tunnels_per_window` (tunnels *opened* per window). The second protects
   the provider key, not latency.
-- Local dev config is `config.local.yaml` (gitignored); `state_dir` is
+- Local dev config is `config.local.toml` (gitignored); `state_dir` is
   `.local-state/`.
 - `internal/nordvpn` `List.Usable()` drops Dedicated-IP and non-standard-group
   servers: an ordinary subscription cannot use them, so they would fill the pool

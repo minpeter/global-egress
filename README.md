@@ -161,8 +161,8 @@ global-egress probe -catalog /var/lib/global-egress/wireguard \
   -concurrency 2 -interval 2s
 
 # 5. Run the service.
-cp deploy/config.example.yaml /etc/global-egress/config.yaml
-global-egress serve -config /etc/global-egress/config.yaml
+cp deploy/config.example.toml /etc/global-egress/config.toml
+global-egress serve -config /etc/global-egress/config.toml
 ```
 
 ## Using the proxy
@@ -189,6 +189,7 @@ curl -x http://egress.example.internal:3128 --proxy-user 'cc=jp:x'              
 curl -x http://egress.example.internal:3128 --proxy-user 'city=us-lax:x'        https://api.example.com/
 curl -x http://egress.example.internal:3128 --proxy-user 'sess=job-1;ttl=600:x' https://api.example.com/
 curl -x http://egress.example.internal:3128 --proxy-user 'uniq=batch-7:x'       https://api.example.com/
+curl -x http://egress.example.internal:3128 --proxy-user 'provider=external-example:x' https://api.example.com/
 ```
 
 | Directive | Meaning |
@@ -197,6 +198,7 @@ curl -x http://egress.example.internal:3128 --proxy-user 'uniq=batch-7:x'       
 | `cc=jp` | Restrict to a country. Several: `cc=jp\|us` |
 | `city=us-lax` | Restrict to a city |
 | `slot=us-lax-wg-001` | Pin one specific slot, mainly for debugging |
+| `provider=external-example` | Select a configured provider by ID |
 | `sess=name` | Sticky: reuse the same exit IP for this session |
 | `ttl=600` | Session lifetime in seconds (or `10m`) |
 | `uniq=batch` | Never reuse a public IP within this batch |
@@ -206,7 +208,12 @@ curl -x http://egress.example.internal:3128 --proxy-user 'uniq=batch-7:x'       
 
 Directives are separated by `;` or `,`. An empty username means "no constraints".
 The password is a single optional shared secret (`access.password`), not an
-identity.
+identity. Provider credentials live in the same TOML file as `[[providers]]`
+entries, so protect it (mode 0600): one `type = "mullvad"` provider owns
+`catalog`, `relays`, and `entries`, and each optional `type = "socks5"`
+provider carries its authenticated `url` plus optional `country`/`city`
+labels. The external URL may use `socks5://` or `socks5h://`; its credentials
+are kept in memory and are never returned by the control API.
 
 ### Always give a password, even a dummy one
 
@@ -430,7 +437,7 @@ your provider's terms for how many simultaneous connections one device may make.
 
 ## Configuration
 
-See [`deploy/config.example.yaml`](deploy/config.example.yaml). Every field is
+See [`deploy/config.example.toml`](deploy/config.example.toml). Every field is
 documented there.
 
 ## Operations
@@ -457,7 +464,7 @@ make build   # build ./bin/global-egress
 make test    # go test ./...
 make lint    # golangci-lint
 make check   # formatting (gofumpt + goimports), vet, lint, tests
-make run     # run with config.local.yaml
+make run     # run with config.local.toml
 ```
 
 ## Monitoring
@@ -536,7 +543,7 @@ an unprivileged distroless user.
 
 ```sh
 cd deploy/docker
-cp config.example.yaml config.yaml
+cp config.example.toml config.toml
 printf 'changeme\n' > proxy-password && chmod 600 proxy-password
 mkdir -p catalog   # provider .conf files or a .zip
 docker compose up -d --build
@@ -563,7 +570,7 @@ addgroup -S egress && adduser -S -D -H -h /var/lib/global-egress \
 
 install -m 0755 global-egress /usr/local/bin/
 install -d -m 0750 -o root -g egress /opt/global-egress
-install -m 0640 -o root -g egress bundle.zip config.yaml /opt/global-egress/
+install -m 0640 -o root -g egress bundle.zip config.toml /opt/global-egress/
 install -d -m 0700 -o egress -g egress /var/lib/global-egress
 
 install -m 0755 deploy/openrc/global-egress /etc/init.d/global-egress
@@ -587,7 +594,7 @@ systemd-sysusers
 install -m 0755 global-egress /usr/local/bin/
 install -m 0644 deploy/global-egress.service /etc/systemd/system/
 install -d -m 0750 -o root -g global-egress /etc/global-egress
-install -m 0640 -o root -g global-egress deploy/config.example.yaml /etc/global-egress/config.yaml
+install -m 0640 -o root -g global-egress deploy/config.example.toml /etc/global-egress/config.toml
 
 systemctl daemon-reload
 systemctl enable --now global-egress

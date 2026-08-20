@@ -3,7 +3,7 @@ name="global-egress"
 description="Internal rotating egress proxy (Mullvad relay SOCKS over userspace WireGuard)"
 
 command="/usr/local/bin/global-egress"
-command_args="serve -config /opt/global-egress/config.yaml"
+command_args="serve -config /opt/global-egress/config.toml"
 # Tunnels run in userspace, so the service needs no privileges at all.
 command_user="egress:egress"
 command_background="yes"

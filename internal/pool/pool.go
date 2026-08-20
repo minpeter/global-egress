@@ -238,7 +238,7 @@ func (s *slotState) isOpen() bool { return s.tunnel != nil }
 // Relay-socks slots ride on the shared entries, so they never need one; a
 // WireGuard slot only qualifies while its own tunnel is up.
 func (s *slotState) ready() bool {
-	return s.spec.Kind == KindRelaySocks || s.isOpen()
+	return s.spec.Kind == KindRelaySocks || s.spec.Kind == KindDirectSocks || s.isOpen()
 }
 
 func (s *slotState) coolingDown(target string, now time.Time) bool {
@@ -584,7 +584,7 @@ func (p *Pool) Acquire(ctx context.Context, pol policy.Policy, target string) (*
 			dialer:   dialer,
 			Slot:     state.spec,
 			Entry:    entryID,
-			Chained:  state.spec.Kind == KindRelaySocks,
+			Chained:  state.spec.Kind == KindRelaySocks || state.spec.Kind == KindDirectSocks,
 			PublicIP: publicIP,
 			Session:  pol.Session,
 		}, nil
@@ -724,6 +724,9 @@ func (p *Pool) eligibleLocked(state *slotState, pol policy.Policy, target string
 		return false
 	}
 	if pol.Slot != "" && state.spec.ID != pol.Slot {
+		return false
+	}
+	if pol.Provider != "" && state.spec.Provider != pol.Provider {
 		return false
 	}
 	if len(pol.Countries) > 0 && !containsFold(pol.Countries, state.spec.Country) {
@@ -981,6 +984,9 @@ func (p *Pool) closeLocked(state *slotState, reason string) {
 func (p *Pool) ensureDialer(ctx context.Context, state *slotState) (Dialer, string, error) {
 	if state.spec.Kind == KindRelaySocks {
 		return p.dialerForSocksSlot(ctx, state)
+	}
+	if state.spec.Kind == KindDirectSocks {
+		return p.dialerForDirectSocks(state), "", nil
 	}
 	tunnel, err := p.ensureOpen(ctx, state)
 	if err != nil {

@@ -1,7 +1,7 @@
 # Minimal compose stack for global-egress.
 #
 # Prerequisites (in this directory, or override with env / compose overrides):
-#   config.yaml          from config.example.yaml
+#   config.toml          from config.example.toml
 #   proxy-password       single-line shared secret for proxy clients
 #   catalog/             provider .conf files, or a .zip
 #
@@ -32,7 +32,7 @@ services:
       - "127.0.0.1:3128:3128" # HTTP CONNECT
       - "127.0.0.1:8080:8080" # control + /v1/metrics
     volumes:
-      - ./config.yaml:/etc/global-egress/config.yaml:ro
+      - ./config.toml:/etc/global-egress/config.toml:ro
       - ./proxy-password:/etc/global-egress/proxy-password:ro
       - ./catalog:/catalog:ro
       - state:/var/lib/global-egress

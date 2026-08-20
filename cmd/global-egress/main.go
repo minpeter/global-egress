@@ -110,7 +110,7 @@ usage:
   global-egress relays  [-cache <file>] [-country cc] [-refresh]
   global-egress nordvpn [-key <file>] [-dir <catalog-dir>] [-country cc] [-limit N]
   global-egress probe   -catalog <dir|zip> [-limit N] [-concurrency N] [-country cc]
-  global-egress serve   -config <config.yaml>
+  global-egress serve   -config <config.toml>
   global-egress version
 
 Run any subcommand with -h for its flags.

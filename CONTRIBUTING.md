@@ -83,8 +83,8 @@ or in `.secrets/`, which is ignored:
 ```sh
 ./bin/global-egress inspect -catalog .secrets/bundle.zip
 ./bin/global-egress relays  -cache .local-state/relays.json
-cp deploy/config.example.yaml config.local.yaml   # ignored by git
-./bin/global-egress serve -config config.local.yaml
+cp deploy/config.example.toml config.local.toml   # ignored by git
+./bin/global-egress serve -config config.local.toml
 python3 scripts/verify.py
 ```
 

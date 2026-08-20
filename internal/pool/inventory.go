@@ -19,10 +19,11 @@ import (
 
 // SlotInfo is the public view of one slot.
 type SlotInfo struct {
-	ID      string `json:"id"`
-	Country string `json:"country,omitempty"`
-	City    string `json:"city,omitempty"`
-	Kind    string `json:"kind"`
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+	Country  string `json:"country,omitempty"`
+	City     string `json:"city,omitempty"`
+	Kind     string `json:"kind"`
 	// Target is the endpoint for WireGuard slots, or the proxy address for
 	// relay-socks slots.
 	Target string `json:"target"`
@@ -71,6 +72,7 @@ func (p *Pool) Slots(filter SlotFilter) []SlotInfo {
 		}
 		info := SlotInfo{
 			ID:            state.spec.ID,
+			Provider:      state.spec.Provider,
 			Country:       state.spec.Country,
 			City:          state.spec.City,
 			Kind:          state.spec.Kind.String(),
@@ -282,12 +284,15 @@ func (p *Pool) maybeCheckIP(state *slotState) {
 		defer cancel()
 
 		var dialer Dialer = tunnel
-		if state.spec.Kind == KindRelaySocks {
+		switch state.spec.Kind {
+		case KindRelaySocks:
 			socks, _, err := p.dialerForSocksSlot(ctx, state)
 			if err != nil {
 				return
 			}
 			dialer = socks
+		case KindDirectSocks:
+			dialer = p.dialerForDirectSocks(state)
 		}
 
 		ip, err := FetchPublicIP(ctx, dialer, p.opts.IPCheckURL)
@@ -787,6 +792,9 @@ func (p *Pool) probeDialer(ctx context.Context, state *slotState) (Dialer, func(
 	if state.spec.Kind == KindRelaySocks {
 		dialer, _, err := p.dialerForSocksSlot(ctx, state)
 		return dialer, nil, err
+	}
+	if state.spec.Kind == KindDirectSocks {
+		return p.dialerForDirectSocks(state), nil, nil
 	}
 	p.mu.Lock()
 	if err := ctx.Err(); err != nil {

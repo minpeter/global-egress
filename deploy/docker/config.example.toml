@@ -1,0 +1,40 @@
+# Container example. Copy to config.toml and replace the placeholder paths/secrets.
+mode = "relay-socks"
+state_dir = "/var/lib/global-egress"
+
+[listen]
+socks5 = "0.0.0.0:1080"
+http = "0.0.0.0:3128"
+control = "0.0.0.0:8080"
+
+[access]
+allowed_clients = ["172.16.0.0/12"]
+password_file = "/etc/global-egress/proxy-password"
+require_auth = true
+require_policy = true
+
+[[providers]]
+id = "mullvad"
+type = "mullvad"
+enabled = true
+
+[providers.catalog]
+path = "/catalog/wireguard"
+
+[providers.relays]
+url = "https://api.mullvad.net/www/relays/wireguard/"
+cache = "relays.json"
+refresh = "24h"
+
+[providers.entries]
+auto = 2
+
+# Provider credentials, if used, belong in this TOML file.
+# [[providers]]
+# id = "direct-example"
+# type = "socks5"
+# enabled = true
+# [providers.socks5]
+# url = "socks5h://username:password@proxy.example:1080"
+# country = "us"
+# city = "us-nyc"

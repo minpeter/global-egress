@@ -7,12 +7,12 @@ Unprivileged single-container deploy. Userspace WireGuard needs no
 
 ```sh
 cd deploy/docker
-cp config.example.yaml config.yaml
+cp config.example.toml config.toml
 printf 'changeme\n' > proxy-password
 chmod 600 proxy-password
 mkdir -p catalog
 # copy provider .conf files into catalog/, or drop a .zip there and set
-# catalog.path in config.yaml to the zip path under /catalog/...
+# catalog.path under [providers.catalog] in config.toml to the zip path under /catalog/...
 
 # build locally
 docker compose up -d --build
@@ -33,7 +33,7 @@ curl -x http://cc=jp:changeme@127.0.0.1:3128 https://am.i.mullvad.net/ip
 
 | Host path | Container path | Notes |
 |---|---|---|
-| `config.yaml` | `/etc/global-egress/config.yaml` | required |
+| `config.toml` | `/etc/global-egress/config.toml` | required |
 | `proxy-password` | `/etc/global-egress/proxy-password` | mode 600 |
 | `catalog/` | `/catalog` | WireGuard key material; keep private |
 | named volume `state` | `/var/lib/global-egress` | IP inventory + relay cache |
@@ -60,7 +60,7 @@ publishes multi-arch images:
 
 ## Sizing
 
-Start with `pool.max_active: 25` and about **1 GiB** RAM (compose default). A full
+Start with `pool.max_active = 25` and about **1 GiB** RAM (compose default). A full
 catalog of idle tunnels wants closer to 1.5–2 GiB; raise `mem_limit` and
 `max_active` together. See [docs/capacity.md](../../docs/capacity.md).
 

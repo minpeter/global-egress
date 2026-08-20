@@ -21,13 +21,16 @@ import (
 
 // SOCKS5 wire constants, per RFC 1928.
 const (
-	version      = 0x05
-	methodNoAuth = 0x00
-	cmdConnect   = 0x01
-	atypIPv4     = 0x01
-	atypDomain   = 0x03
-	atypIPv6     = 0x04
-	replySuccess = 0x00
+	version                = 0x05
+	methodNoAuth           = 0x00
+	methodUsernamePassword = 0x02
+	authVersion            = 0x01
+	authSuccess            = 0x00
+	cmdConnect             = 0x01
+	atypIPv4               = 0x01
+	atypDomain             = 0x03
+	atypIPv6               = 0x04
+	replySuccess           = 0x00
 )
 
 // ErrDestination is returned when the SOCKS proxy was reached successfully but
@@ -44,6 +47,9 @@ type Dialer struct {
 	// Timeout bounds the SOCKS negotiation once the proxy is connected. Zero
 	// means the context deadline alone applies.
 	Timeout time.Duration
+	// Username and Password enable RFC1929 authentication when both are set.
+	Username string
+	Password string
 }
 
 // ContextDialer is the subset of net.Dialer that Base must provide.
@@ -101,8 +107,14 @@ func (d *Dialer) negotiate(ctx context.Context, conn net.Conn, host string, port
 		defer func() { _ = conn.SetDeadline(time.Time{}) }()
 	}
 
-	// Greeting: we only offer "no authentication".
-	if _, err := conn.Write([]byte{version, 1, methodNoAuth}); err != nil {
+	methods := []byte{methodNoAuth}
+	if d.Username != "" || d.Password != "" {
+		if len(d.Username) > 255 || len(d.Password) > 255 || d.Username == "" || d.Password == "" {
+			return errors.New("socksdial: username and password must be 1-255 bytes")
+		}
+		methods = []byte{methodUsernamePassword}
+	}
+	if _, err := conn.Write(append([]byte{version, byte(len(methods))}, methods...)); err != nil {
 		return fmt.Errorf("socksdial: write greeting: %w", err)
 	}
 	reply := make([]byte, 2)
@@ -112,8 +124,25 @@ func (d *Dialer) negotiate(ctx context.Context, conn net.Conn, host string, port
 	if reply[0] != version {
 		return fmt.Errorf("socksdial: proxy %s answered SOCKS version %d", d.ProxyAddr, reply[0])
 	}
-	if reply[1] != methodNoAuth {
-		return fmt.Errorf("socksdial: proxy %s requires authentication method 0x%02x", d.ProxyAddr, reply[1])
+	if reply[1] == methodUsernamePassword && d.Username != "" && d.Password != "" {
+		auth := []byte{authVersion, byte(len(d.Username))}
+		auth = append(auth, d.Username...)
+		auth = append(auth, byte(len(d.Password)))
+		auth = append(auth, d.Password...)
+		if _, err := conn.Write(auth); err != nil {
+			return fmt.Errorf("socksdial: write username/password: %w", err)
+		}
+		authReply := make([]byte, 2)
+		if _, err := io.ReadFull(conn, authReply); err != nil {
+			return fmt.Errorf("socksdial: read username/password reply: %w", err)
+		}
+		if authReply[0] != authVersion || authReply[1] != authSuccess {
+			return errors.New("socksdial: proxy rejected username/password")
+		}
+	} else if reply[1] != methodNoAuth {
+		return fmt.Errorf("socksdial: proxy %s selected unsupported authentication method 0x%02x", d.ProxyAddr, reply[1])
+	} else if d.Username != "" || d.Password != "" {
+		return errors.New("socksdial: proxy selected unauthenticated access")
 	}
 
 	request, err := buildConnect(host, port)

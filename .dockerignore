@@ -7,8 +7,9 @@
 .local-state
 bin
 dist
+*.local.toml
+config.toml
 *.local.yaml
-config.yaml
 *.zip
 *.conf
 **/testdata
@@ -18,3 +19,4 @@ deploy
 !LICENSE
 .golangci.yaml
 .gitignore
+/node_modules/

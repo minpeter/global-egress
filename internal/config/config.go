@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/BurntSushi/toml"
 
 	"github.com/minpeter/global-egress/internal/netguard"
 )
@@ -29,37 +30,32 @@ const (
 
 // Config is the on-disk configuration.
 type Config struct {
-	// Mode selects the egress strategy. Defaults to relay-socks.
-	Mode Mode `yaml:"mode"`
-	// Relays configures the provider relay list used by relay-socks mode.
-	Relays RelayConfig `yaml:"relays"`
-	// Entries selects which tunnels relay-socks mode rides on.
-	Entries EntryConfig `yaml:"entries"`
-	// Catalog points at the WireGuard bundle: either a directory of .conf files
-	// or a .zip archive.
-	Catalog CatalogConfig `yaml:"catalog"`
-	// Listen holds the listener addresses.
-	Listen ListenConfig `yaml:"listen"`
+	Mode      Mode          `toml:"mode"`
+	Relays    RelayConfig   `toml:"-" json:"-"`
+	Entries   EntryConfig   `toml:"-" json:"-"`
+	Catalog   CatalogConfig `toml:"-" json:"-"`
+	providers []Provider    `toml:"-" json:"-"`
+	Listen    ListenConfig  `toml:"listen"`
 	// Access controls who may use the proxy.
-	Access AccessConfig `yaml:"access"`
+	Access AccessConfig `toml:"access"`
 	// Pool tunes slot selection and lifecycle.
-	Pool PoolConfig `yaml:"pool"`
+	Pool PoolConfig `toml:"pool"`
 	// Destinations restricts where traffic may go.
-	Destinations DestinationConfig `yaml:"destinations"`
+	Destinations DestinationConfig `toml:"destinations"`
 	// StateDir holds the measured-IP inventory.
-	StateDir string `yaml:"state_dir"`
+	StateDir string `toml:"state_dir"`
 	// Log configures logging.
-	Log LogConfig `yaml:"log"`
+	Log LogConfig `toml:"log"`
 }
 
 // RelayConfig locates the provider relay list.
 type RelayConfig struct {
 	// URL is the relay list endpoint.
-	URL string `yaml:"url"`
+	URL string `toml:"url"`
 	// Cache is where the list is stored; relative paths resolve under state_dir.
-	Cache string `yaml:"cache"`
+	Cache string `toml:"cache"`
 	// Refresh is how long a cached list is trusted before refetching.
-	Refresh time.Duration `yaml:"refresh"`
+	Refresh time.Duration `toml:"refresh"`
 }
 
 // EntryConfig selects the entry tunnels for relay-socks mode.
@@ -67,133 +63,134 @@ type EntryConfig struct {
 	// Slots names catalog slots to use as entries, e.g. ["jp-tyo-wg-001"].
 	// Prefer listing these explicitly: the best entry depends on where this
 	// service runs, which cannot be derived from the catalog.
-	Slots []string `yaml:"slots"`
+	Slots []string `toml:"slots"`
 	// Auto picks this many entries spread across regions when Slots is empty.
-	Auto int `yaml:"auto"`
+	Auto int `toml:"auto"`
 }
 
 // CatalogConfig locates the WireGuard configuration bundle.
 type CatalogConfig struct {
-	Path string `yaml:"path"`
+	Path string `toml:"path"`
 }
 
 // ListenConfig holds listener addresses. An empty value disables that listener.
 type ListenConfig struct {
-	SOCKS5  string `yaml:"socks5"`
-	HTTP    string `yaml:"http"`
-	Control string `yaml:"control"`
+	SOCKS5  string `toml:"socks5"`
+	HTTP    string `toml:"http"`
+	Control string `toml:"control"`
 }
 
 // AccessConfig controls authentication and the client ACL.
 type AccessConfig struct {
 	// AllowedClients are CIDRs permitted to use the proxy and control API.
-	AllowedClients []string `yaml:"allowed_clients"`
+	AllowedClients []string `toml:"allowed_clients"`
 	// Password, when set, is required from proxy clients. The username always
 	// carries the selection policy, never an identity.
-	Password string `yaml:"password"`
+	Password string `toml:"password"`
 	// PasswordFile reads the password from a file instead of the config.
-	PasswordFile string `yaml:"password_file"`
+	PasswordFile string `toml:"password_file"`
 	// RequireAuth rejects proxy clients that present no credentials.
-	RequireAuth bool `yaml:"require_auth"`
+	RequireAuth bool `toml:"require_auth"`
 	// RequirePolicy rejects proxy requests that carry no selection directives.
 	// Useful when every caller is expected to choose a country or a session, and
 	// an unnoticed fallback to an arbitrary exit would be a bug rather than a
 	// convenience.
-	RequirePolicy bool `yaml:"require_policy"`
+	RequirePolicy bool `toml:"require_policy"`
 	// ControlToken, when set, is required as a Bearer token on the control API.
-	ControlToken string `yaml:"control_token"`
+	ControlToken string `toml:"control_token"`
 	// ControlTokenFile reads the control token from a file.
-	ControlTokenFile string `yaml:"control_token_file"`
+	ControlTokenFile string `toml:"control_token_file"`
 }
 
 // PoolConfig tunes the pool.
 type PoolConfig struct {
 	// MaxActive caps simultaneously open tunnels. Zero means "no limit", which
 	// is only advisable after measuring memory use per slot.
-	MaxActive int `yaml:"max_active"`
+	MaxActive int `toml:"max_active"`
 	// Preopen brings this many tunnels up at startup so the first requests do
 	// not pay for a handshake.
-	Preopen int `yaml:"preopen"`
+	Preopen int `toml:"preopen"`
 	// MaxConnsPerExit caps concurrent connections through one exit, so load is
 	// spread over relays instead of concentrated on one. Zero disables it.
-	MaxConnsPerExit int `yaml:"max_conns_per_exit"`
+	MaxConnsPerExit int `toml:"max_conns_per_exit"`
 	// MaxConcurrentConns caps concurrent connections across the pool. Zero
 	// disables it.
-	MaxConcurrentConns int `yaml:"max_concurrent_conns"`
+	MaxConcurrentConns int `toml:"max_concurrent_conns"`
 	// SessionTTL is the default sticky-session lifetime.
-	SessionTTL time.Duration `yaml:"session_ttl"`
+	SessionTTL time.Duration `toml:"session_ttl"`
 	// MaxSessionTTL caps a client-selected sticky-session lifetime.
-	MaxSessionTTL time.Duration `yaml:"max_session_ttl"`
+	MaxSessionTTL time.Duration `toml:"max_session_ttl"`
 	// MaxSessions caps concurrently retained sticky-session names.
-	MaxSessions int `yaml:"max_sessions"`
+	MaxSessions int `toml:"max_sessions"`
 	// BatchTTL is how long a unique-IP batch is remembered.
-	BatchTTL time.Duration `yaml:"batch_ttl"`
+	BatchTTL time.Duration `toml:"batch_ttl"`
 	// MaxBatchTTL caps a client-selected unique-batch lifetime.
-	MaxBatchTTL time.Duration `yaml:"max_batch_ttl"`
+	MaxBatchTTL time.Duration `toml:"max_batch_ttl"`
 	// MaxUniqueBatches caps concurrently active unique-IP batches.
-	MaxUniqueBatches int `yaml:"max_unique_batches"`
+	MaxUniqueBatches int `toml:"max_unique_batches"`
 	// Cooldown is the default per-target cooldown applied by a report.
-	Cooldown time.Duration `yaml:"cooldown"`
+	Cooldown time.Duration `toml:"cooldown"`
 	// PreferredTTL is how long a destination remembers a last-good slot.
-	PreferredTTL time.Duration `yaml:"preferred_ttl"`
+	PreferredTTL time.Duration `toml:"preferred_ttl"`
 	// PreferredMax is how many last-good slots a destination keeps.
-	PreferredMax int `yaml:"preferred_max"`
+	PreferredMax int `toml:"preferred_max"`
 	// IdleTimeout closes tunnels unused for this long.
-	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	IdleTimeout time.Duration `toml:"idle_timeout"`
 	// HandshakeTimeout bounds bringing a tunnel up.
-	HandshakeTimeout time.Duration `yaml:"handshake_timeout"`
+	HandshakeTimeout time.Duration `toml:"handshake_timeout"`
 	// DialAttempts is how many slots a request tries before failing.
-	DialAttempts int `yaml:"dial_attempts"`
+	DialAttempts int `toml:"dial_attempts"`
 	// FailureBackoff is the base backoff for a failing slot.
-	FailureBackoff time.Duration `yaml:"failure_backoff"`
+	FailureBackoff time.Duration `toml:"failure_backoff"`
 	// NewTunnelsPerWindow caps how many tunnels may be opened per
 	// NewTunnelWindow. Providers restrict how fast one key may associate with
 	// new relays, so this protects the key from being blocked. Zero disables it.
-	NewTunnelsPerWindow int `yaml:"new_tunnels_per_window"`
+	NewTunnelsPerWindow int `toml:"new_tunnels_per_window"`
 	// NewTunnelWindow is the period NewTunnelsPerWindow applies to.
-	NewTunnelWindow time.Duration `yaml:"new_tunnel_window"`
+	NewTunnelWindow time.Duration `toml:"new_tunnel_window"`
 	// EntryExploreRate is the share of requests that deliberately use the
 	// second-best entry, so alternatives keep being measured. Zero uses the
 	// built-in default.
-	EntryExploreRate float64 `yaml:"entry_explore_rate"`
+	EntryExploreRate float64 `toml:"entry_explore_rate"`
 	// StableEntryRouting always uses the best known entry, trading self-correcting
 	// routing for predictability.
-	StableEntryRouting bool `yaml:"stable_entry_routing"`
+	StableEntryRouting bool `toml:"stable_entry_routing"`
 	// DialTimeout bounds connecting to the destination through a tunnel.
-	DialTimeout time.Duration `yaml:"dial_timeout"`
+	DialTimeout time.Duration `toml:"dial_timeout"`
 	// RelayIdleTimeout closes relayed connections after inactivity.
-	RelayIdleTimeout time.Duration `yaml:"relay_idle_timeout"`
+	RelayIdleTimeout time.Duration `toml:"relay_idle_timeout"`
 	// IPCheckURL is the echo endpoint used to learn a slot's public IP.
 	// Setting it to "" disables IP measurement, and with it unique-IP batches.
-	IPCheckURL string `yaml:"ip_check_url"`
+	IPCheckURL string `toml:"ip_check_url"`
 	// IPCheckTimeout bounds one measurement.
-	IPCheckTimeout time.Duration `yaml:"ip_check_timeout"`
+	IPCheckTimeout time.Duration `toml:"ip_check_timeout"`
 	// IPRefreshInterval is how long a measured IP is trusted.
-	IPRefreshInterval time.Duration `yaml:"ip_refresh_interval"`
+	IPRefreshInterval time.Duration `toml:"ip_refresh_interval"`
 	// IPCheckConcurrency caps simultaneous measurements.
-	IPCheckConcurrency int `yaml:"ip_check_concurrency"`
+	IPCheckConcurrency int `toml:"ip_check_concurrency"`
 }
 
 // DestinationConfig restricts destinations.
 type DestinationConfig struct {
 	// DeniedCIDRs replaces the built-in private-range denylist when non-nil.
-	DeniedCIDRs []string `yaml:"denied_cidrs"`
+	DeniedCIDRs []string `toml:"denied_cidrs"`
 	// AllowedPorts, when non-empty, is an allowlist of destination ports.
-	AllowedPorts []int `yaml:"allowed_ports"`
+	AllowedPorts []int `toml:"allowed_ports"`
 }
 
 // LogConfig configures logging.
 type LogConfig struct {
 	// Level is one of debug, info, warn, error.
-	Level string `yaml:"level"`
+	Level string `toml:"level"`
 	// Format is "text" or "json".
-	Format string `yaml:"format"`
+	Format string `toml:"format"`
 }
 
 // Default returns a configuration with every optional value populated.
 func Default() Config {
 	return Config{
-		Mode: ModeRelaySocks,
+		Mode:      ModeRelaySocks,
+		providers: []Provider{{providerType: ProviderMullvad, enabled: true, id: "mullvad"}},
 		Relays: RelayConfig{
 			URL:     "https://api.mullvad.net/www/relays/wireguard/",
 			Cache:   "relays.json",
@@ -240,17 +237,50 @@ func Default() Config {
 	}
 }
 
-// Load reads a YAML configuration file on top of the defaults.
+type rawConfig struct {
+	Mode         Mode              `toml:"mode"`
+	Listen       ListenConfig      `toml:"listen"`
+	Access       AccessConfig      `toml:"access"`
+	Pool         PoolConfig        `toml:"pool"`
+	Destinations DestinationConfig `toml:"destinations"`
+	StateDir     string            `toml:"state_dir"`
+	Log          LogConfig         `toml:"log"`
+	Providers    []rawProvider     `toml:"providers"`
+}
+
+// Load reads the sole supported TOML configuration format.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("config: read %s: %w", path, err)
 	}
-	decoder := yaml.NewDecoder(strings.NewReader(string(raw)))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&cfg); err != nil {
+	input := rawConfig{
+		Mode: cfg.Mode, Listen: cfg.Listen, Access: cfg.Access, Pool: cfg.Pool,
+		Destinations: cfg.Destinations, StateDir: cfg.StateDir, Log: cfg.Log,
+	}
+	metadata, err := toml.Decode(string(raw), &input)
+	if err != nil {
 		return Config{}, fmt.Errorf("config: parse %s: %w", path, err)
+	}
+	if undecoded := metadata.Undecoded(); len(undecoded) != 0 {
+		return Config{}, fmt.Errorf("config: unknown field %q", undecoded[0])
+	}
+	cfg.Mode, cfg.Listen, cfg.Access, cfg.Pool = input.Mode, input.Listen, input.Access, input.Pool
+	cfg.Destinations, cfg.StateDir, cfg.Log = input.Destinations, input.StateDir, input.Log
+	providers, err := normalizeProviders(input.Providers)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.providers = providers
+	for _, provider := range providers {
+		if provider.Type() == ProviderMullvad {
+			mullvad, ok := provider.Mullvad()
+			if ok {
+				cfg.Catalog, cfg.Relays, cfg.Entries = mullvad.Catalog, mullvad.Relays, mullvad.Entries
+			}
+			break
+		}
 	}
 	if err := cfg.finalize(filepath.Dir(path)); err != nil {
 		return Config{}, err
@@ -283,10 +313,24 @@ func (c *Config) finalize(baseDir string) error {
 	return c.Validate()
 }
 
+// Providers returns the validated providers from the TOML document.
+func (c Config) Providers() []Provider {
+	return append([]Provider(nil), c.providers...)
+}
+
+func (c Config) mullvadEnabled() bool {
+	for _, provider := range c.providers {
+		if provider.enabled && provider.providerType == ProviderMullvad {
+			return true
+		}
+	}
+	return false
+}
+
 // Validate checks the configuration for obvious mistakes.
 func (c *Config) Validate() error {
-	if c.Catalog.Path == "" {
-		return fmt.Errorf("config: catalog.path is required")
+	if len(c.providers) == 0 {
+		return errors.New("config: providers must contain at least one provider")
 	}
 	switch c.Mode {
 	case ModeWireGuard, ModeRelaySocks:
@@ -294,7 +338,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: mode %q is not %q or %q", c.Mode, ModeWireGuard, ModeRelaySocks)
 	}
 	if c.Mode == ModeRelaySocks {
-		if len(c.Entries.Slots) == 0 && c.Entries.Auto <= 0 {
+		if c.mullvadEnabled() && len(c.Entries.Slots) == 0 && c.Entries.Auto <= 0 {
 			return fmt.Errorf("config: relay-socks mode needs entries.slots or entries.auto")
 		}
 		if c.Relays.Refresh < 0 {

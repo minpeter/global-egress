@@ -49,6 +49,8 @@ type Policy struct {
 	Cities []string
 	// Slot pins selection to one slot ID.
 	Slot string
+	// Provider pins selection to one configured provider ID.
+	Provider string
 	// Session, when set, makes selection sticky under that name.
 	Session string
 	// TTL overrides the configured session lifetime. Zero means "use the default".
@@ -69,7 +71,7 @@ type Policy struct {
 // IsZero reports whether the client expressed nothing at all. An explicit any=1 is
 // an expression, so it is not zero.
 func (p Policy) IsZero() bool {
-	return !p.AnyExit && len(p.Countries) == 0 && len(p.Cities) == 0 && p.Slot == "" &&
+	return !p.AnyExit && len(p.Countries) == 0 && len(p.Cities) == 0 && p.Slot == "" && p.Provider == "" &&
 		p.Session == "" && p.TTL == 0 && p.UniqueBatch == "" && p.BatchTTL == 0 &&
 		p.HealthScope == "" && len(p.ExcludeIPs) == 0
 }
@@ -92,6 +94,9 @@ func (p Policy) String() string {
 	}
 	if p.Slot != "" {
 		parts = append(parts, "slot="+p.Slot)
+	}
+	if p.Provider != "" {
+		parts = append(parts, "provider="+p.Provider)
 	}
 	if p.Session != "" {
 		parts = append(parts, "sess="+p.Session)
@@ -198,6 +203,8 @@ func Parse(username string) (Policy, error) {
 			p.Cities = appendLower(p.Cities, value)
 		case "slot":
 			p.Slot = value
+		case "provider":
+			p.Provider = value
 		case "sess", "session":
 			p.Session = value
 		case "ttl":
@@ -253,6 +260,7 @@ func (p *Policy) validate() error {
 	for name, value := range map[string]string{
 		"session":      p.Session,
 		"slot":         p.Slot,
+		"provider":     p.Provider,
 		"unique batch": p.UniqueBatch,
 		"health scope": p.HealthScope,
 	} {

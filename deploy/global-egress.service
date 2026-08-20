@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/global-egress serve -config /etc/global-egress/config.yaml
+ExecStart=/usr/local/bin/global-egress serve -config /etc/global-egress/config.toml
 Restart=on-failure
 RestartSec=5s
 

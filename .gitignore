@@ -5,12 +5,13 @@
 
 # Local runtime state and secrets
 .local-state/
+*.local.toml
+config.toml
 *.local.yaml
-config.yaml
 
 # Build output
 /bin/
 /dist/
 
-# Tegami / Node release tooling (package.json is private, not an npm package)
+# Tegami / Node release tooling
 /node_modules/

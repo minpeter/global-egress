@@ -55,34 +55,52 @@ def timed_request(country: str, timeout: int = 45) -> float | None:
     return time.monotonic() - started
 
 
+def render_config(catalog: str, entry: str, state_dir: str) -> str:
+    """Render the strict TOML service config for one benchmarked entry."""
+    return f"""
+mode = "relay-socks"
+state_dir = "{state_dir}"
+
+[listen]
+socks5 = ""
+http = "127.0.0.1:{HTTP_PORT}"
+control = "127.0.0.1:{CONTROL_PORT}"
+
+[access]
+allowed_clients = ["127.0.0.1/32"]
+
+[pool]
+max_active = 5
+preopen = 1
+
+[log]
+level = "error"
+
+[[providers]]
+id = "mullvad"
+type = "mullvad"
+enabled = true
+
+[providers.catalog]
+path = "{catalog}"
+
+[providers.relays]
+url = "https://api.mullvad.net/www/relays/wireguard/"
+cache = "relays.json"
+refresh = "24h"
+
+[providers.entries]
+slots = ["{entry}"]
+"""
+
+
 def bench_entry(catalog: str, entry: str, countries: list[str]) -> dict[str, float]:
     # The config lives in a temp directory, and relative paths in a config are
     # resolved against the config's own directory, so everything must be absolute.
     catalog = os.path.abspath(catalog)
     state_dir = os.path.abspath(".local-state")
-    config = f"""
-mode: relay-socks
-catalog:
-  path: {catalog}
-relays:
-  cache: relays.json
-  refresh: 24h
-entries:
-  slots: [{entry}]
-listen:
-  socks5: ""
-  http: 127.0.0.1:{HTTP_PORT}
-  control: 127.0.0.1:{CONTROL_PORT}
-access:
-  allowed_clients: [127.0.0.1/32]
-pool:
-  max_active: 5
-  preopen: 1
-state_dir: {state_dir}
-log:
-  level: error
-"""
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as handle:
+    config = render_config(catalog, entry, state_dir)
+    with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
         handle.write(config)
         config_path = handle.name
 

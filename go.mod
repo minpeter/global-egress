@@ -2,10 +2,9 @@ module github.com/minpeter/global-egress
 
 go 1.25.12
 
-require (
-	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
-	gopkg.in/yaml.v3 v3.0.1
-)
+require golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
+
+require github.com/BurntSushi/toml v1.6.0
 
 require (
 	github.com/google/btree v1.1.3 // indirect

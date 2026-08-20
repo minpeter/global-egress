@@ -43,4 +43,4 @@ USER nonroot:nonroot
 EXPOSE 1080 3128 8080
 
 ENTRYPOINT ["/usr/local/bin/global-egress"]
-CMD ["serve", "-config", "/etc/global-egress/config.yaml"]
+CMD ["serve", "-config", "/etc/global-egress/config.toml"]
