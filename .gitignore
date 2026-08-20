@@ -7,6 +7,7 @@
 .local-state/
 *.local.toml
 config.toml
+deploy/docker/proxy-password
 *.local.yaml
 
 # Build output
