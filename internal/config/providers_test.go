@@ -39,6 +39,7 @@ enabled = true
 url = "socks5h://dummy-user:dummy-pass@proxy.example:1080"
 country = "us"
 city = "us-nyc"
+sessions = 3
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -51,12 +52,33 @@ city = "us-nyc"
 	if len(providers) != 2 || providers[0].ID() != "mullvad-main" || providers[1].ID() != "direct-test" {
 		t.Fatalf("providers = %+v", providers)
 	}
+	if got := providers[1].SOCKSSessions(); got != 3 {
+		t.Fatalf("SOCKSSessions = %d, want 3", got)
+	}
 	encoded, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(encoded), "dummy-pass") {
 		t.Fatal("config JSON leaked provider credential")
+	}
+}
+
+func TestLoadRejectsTooManySOCKSSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `[[providers]]
+id = "direct-test"
+type = "socks5"
+enabled = true
+[providers.socks5]
+url = "socks5h://dummy-user:dummy-pass@proxy.example:1080"
+sessions = 10001
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted too many SOCKS sessions")
 	}
 }
 

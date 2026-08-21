@@ -215,6 +215,16 @@ provider carries its authenticated `url` plus optional `country`/`city`
 labels. The external URL may use `socks5://` or `socks5h://`; its credentials
 are kept in memory and are never returned by the control API.
 
+For a provider such as Decodo whose rotating port changes the IP on every
+request, one slot cannot honestly represent the remote pool. Set
+`[providers.socks5] sessions = N` to create N Decodo-compatible sticky logical
+sessions, each with its own measured slot and IP. `sessions = 0` (the default)
+keeps one ordinary rotating endpoint slot. Choose N no higher than the number
+of IPs in the provider plan: the gateway can reuse an IP across sessions, and
+global-egress cannot discover the provider's remote pool size without probing.
+The service probes configured direct-SOCKS slots at startup when IP checks are
+enabled, so `uniq=` can use the measured sticky-session identities.
+
 ### Always give a password, even a dummy one
 
 The directives ride in the proxy **username**, so the client has to actually send

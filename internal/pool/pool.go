@@ -748,6 +748,9 @@ func (p *Pool) eligibleLocked(state *slotState, pol policy.Policy, target string
 		return false
 	}
 	requiresFreshIP := pol.UniqueBatch != "" || len(pol.ExcludeIPs) > 0
+	if state.spec.Rotating && requiresFreshIP {
+		return false
+	}
 	ipFresh := state.publicIP.IsValid() &&
 		!state.ipCheckedAt.IsZero() &&
 		now.Before(state.ipCheckedAt.Add(p.opts.IPRefreshInterval))
@@ -1526,6 +1529,9 @@ func (p *Pool) Prefer(in PreferInput) (PreferResult, error) {
 		return PreferResult{}, fmt.Errorf("pool: unknown slot %q", in.Slot)
 	}
 	state := p.slots[in.Slot]
+	if state.spec.Rotating {
+		return PreferResult{}, errors.New("pool: rotating slot has no stable public IP")
+	}
 	if !state.publicIP.IsValid() {
 		return PreferResult{}, fmt.Errorf("pool: slot %q has no measured public IP", in.Slot)
 	}

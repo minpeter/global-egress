@@ -41,6 +41,10 @@ refresh = "24h"
 slots = ["jp-tyo-wg-001", "nl-ams-wg-001", "us-lax-wg-001"]
 auto = 2
 
+# For a rotating Decodo endpoint, set sessions to the number of logical
+# sticky sessions you want to measure and spread across. Zero keeps one
+# ordinary rotating endpoint slot; positive values append Decodo session-*
+# parameters and create that many independently measured slots.
 # Add direct authenticated SOCKS providers in the same TOML file when needed.
 # [[providers]]
 # id = "direct-example"
@@ -50,3 +54,4 @@ auto = 2
 # url = "socks5h://username:password@proxy.example:1080"
 # country = "us"
 # city = "us-nyc"
+# sessions = 10

@@ -30,6 +30,7 @@ type Provider struct {
 	id           string
 	country      string
 	city         string
+	sessions     int
 	proxyURL     *url.URL
 	mullvad      *MullvadConfig
 }
@@ -40,6 +41,11 @@ func (p Provider) ID() string         { return p.id }
 func (p Provider) Country() string    { return p.country }
 func (p Provider) City() string       { return p.city }
 func (p Provider) SOCKSURL() *url.URL { return p.proxyURL }
+
+// SOCKSSessions returns the number of sticky logical sessions requested for a
+// rotating SOCKS endpoint. Zero preserves one ordinary rotating slot.
+func (p Provider) SOCKSSessions() int { return p.sessions }
+
 func (p Provider) Mullvad() (MullvadConfig, bool) {
 	if p.mullvad == nil {
 		return MullvadConfig{}, false
@@ -58,9 +64,10 @@ type rawProvider struct {
 }
 
 type rawSOCKS5 struct {
-	URL     string `toml:"url"`
-	Country string `toml:"country"`
-	City    string `toml:"city"`
+	URL      string `toml:"url"`
+	Country  string `toml:"country"`
+	City     string `toml:"city"`
+	Sessions int    `toml:"sessions"`
 }
 
 func normalizeProviders(raw []rawProvider) ([]Provider, error) {
@@ -101,7 +108,7 @@ func normalizeProviders(raw []rawProvider) ([]Provider, error) {
 			if err != nil {
 				return nil, err
 			}
-			provider.country, provider.city, provider.proxyURL = parsed.country, parsed.city, parsed.proxyURL
+			provider.country, provider.city, provider.sessions, provider.proxyURL = parsed.country, parsed.city, parsed.sessions, parsed.proxyURL
 		default:
 			return nil, fmt.Errorf("config: unsupported provider type %q", entry.Type)
 		}
@@ -119,6 +126,7 @@ func normalizeProviders(raw []rawProvider) ([]Provider, error) {
 type parsedSOCKS5 struct {
 	country  string
 	city     string
+	sessions int
 	proxyURL *url.URL
 }
 
@@ -145,7 +153,10 @@ func parseSOCKS5Provider(entry rawSOCKS5) (parsedSOCKS5, error) {
 	if city != "" && !isProviderToken(city) {
 		return parsedSOCKS5{}, errors.New("config: socks5 provider city is invalid")
 	}
-	return parsedSOCKS5{country: country, city: city, proxyURL: parsed}, nil
+	if entry.Sessions < 0 || entry.Sessions > 10_000 {
+		return parsedSOCKS5{}, errors.New("config: socks5 provider sessions must be between 0 and 10000")
+	}
+	return parsedSOCKS5{country: country, city: city, sessions: entry.Sessions, proxyURL: parsed}, nil
 }
 
 func isProviderToken(value string) bool {

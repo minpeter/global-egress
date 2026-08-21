@@ -90,6 +90,30 @@ func runServe(ctx context.Context, args []string) error {
 	var wg sync.WaitGroup
 	errs := make(chan error, 3)
 
+	directSlots := make([]string, 0)
+	for _, spec := range specs {
+		if spec.Kind == pool.KindDirectSocks {
+			directSlots = append(directSlots, spec.ID)
+		}
+	}
+	if len(directSlots) > 0 && cfg.Pool.IPCheckURL != "" {
+		go func() {
+			results := egressPool.Probe(serveCtx, pool.ProbeOptions{
+				Concurrency: cfg.Pool.IPCheckConcurrency,
+				Slots:       directSlots,
+			})
+			known := 0
+			for _, result := range results {
+				if result.PublicIP != "" {
+					known++
+				}
+			}
+			logger.Info("direct SOCKS sessions probed",
+				slog.Int("sessions", len(results)),
+				slog.Int("known_ips", known))
+		}()
+	}
+
 	deps := proxy.Deps{
 		Pool:           egressPool,
 		Guard:          guard,
@@ -266,11 +290,11 @@ func buildSlots(ctx context.Context, cfg config.Config, bundle *catalog.Bundle, 
 			if provider.Type() != config.ProviderSOCKS5 || !provider.Enabled() {
 				continue
 			}
-			direct, err := pool.NewDirectSocksSpec(pool.DirectSocksOptions{ID: provider.ID(), Country: provider.Country(), City: provider.City(), URL: provider.SOCKSURL()})
+			direct, err := directSocksSpecs(provider)
 			if err != nil {
-				return nil, nil, fmt.Errorf("external provider %q: %w", provider.ID(), err)
+				return nil, nil, err
 			}
-			specs = append(specs, direct)
+			specs = append(specs, direct...)
 		}
 		logger.Info("mode: wireguard (one tunnel per slot)", slog.Int("slots", len(specs)))
 		if len(specs) == 0 {
@@ -303,13 +327,11 @@ func buildSlots(ctx context.Context, cfg config.Config, bundle *catalog.Bundle, 
 				slog.Bool("relay_list_refreshed", fetched))
 		}
 		if provider.Type() == config.ProviderSOCKS5 && provider.Enabled() {
-			direct, err := pool.NewDirectSocksSpec(pool.DirectSocksOptions{
-				ID: provider.ID(), Country: provider.Country(), City: provider.City(), URL: provider.SOCKSURL(),
-			})
+			direct, err := directSocksSpecs(provider)
 			if err != nil {
-				return nil, nil, fmt.Errorf("external provider %q: %w", provider.ID(), err)
+				return nil, nil, err
 			}
-			specs = append(specs, direct)
+			specs = append(specs, direct...)
 		}
 	}
 	if mullvadEnabled {
@@ -328,6 +350,32 @@ func buildSlots(ctx context.Context, cfg config.Config, bundle *catalog.Bundle, 
 	}
 	logger.Info("mode: relay-socks", slog.Int("exits", len(specs)), slog.String("entries", strings.Join(entryNames, ",")))
 	return specs, entrySlots, nil
+}
+
+func directSocksSpecs(provider config.Provider) ([]pool.Spec, error) {
+	count := provider.SOCKSSessions()
+	if count <= 0 {
+		count = 1
+	}
+	specs := make([]pool.Spec, 0, count)
+	for i := 0; i < count; i++ {
+		id := provider.ID()
+		session := ""
+		if count > 1 {
+			id = fmt.Sprintf("%s-session-%03d", provider.ID(), i+1)
+			session = fmt.Sprintf("ge%03d", i+1)
+		}
+		spec, err := pool.NewDirectSocksSpec(pool.DirectSocksOptions{
+			ID: id, Provider: provider.ID(), Country: provider.Country(), City: provider.City(),
+			Session: session, Rotating: count == 1 && provider.SOCKSSessions() == 0,
+			URL: provider.SOCKSURL(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("external provider %q: %w", provider.ID(), err)
+		}
+		specs = append(specs, spec)
+	}
+	return specs, nil
 }
 
 func mullvadConfigured(cfg config.Config) bool {

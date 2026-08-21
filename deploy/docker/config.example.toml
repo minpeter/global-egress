@@ -38,3 +38,4 @@ auto = 2
 # url = "socks5h://username:password@proxy.example:1080"
 # country = "us"
 # city = "us-nyc"
+# sessions = 10

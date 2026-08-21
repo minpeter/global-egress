@@ -50,6 +50,9 @@ type Spec struct {
 	City string
 	// Provider is the non-secret policy selector.
 	Provider string
+	// Rotating means the upstream may change public IP on every request, so the
+	// measured address must not be used as a stable unique-IP identity.
+	Rotating bool
 	// Kind selects how the slot is reached.
 	Kind Kind
 	// WG carries the tunnel configuration for a WireGuard slot.
@@ -115,11 +118,18 @@ func SpecsFromExits(exits []ExitSpec) []Spec {
 
 // DirectSocksOptions contains one external SOCKS provider for a direct slot.
 type DirectSocksOptions struct {
-	// ID is the provider and policy selector.
+	// ID is the unique slot identifier.
 	ID string
+	// Provider overrides the policy selector when ID names a logical session.
+	Provider string
 	// Country and City are optional selection hints.
 	Country string
 	City    string
+	// Session is appended as a Decodo-compatible sticky-session username
+	// parameter. Empty preserves the endpoint's native session behavior.
+	Session string
+	// Rotating marks an endpoint whose public IP is not stable between requests.
+	Rotating bool
 	// URL carries the authenticated endpoint from private config memory.
 	URL *url.URL
 }
@@ -139,9 +149,17 @@ func NewDirectSocksSpec(options DirectSocksOptions) (Spec, error) {
 	if err != nil || host == "" || port == "" {
 		return Spec{}, errors.New("pool: direct SOCKS provider needs a host and port")
 	}
+	provider := options.Provider
+	if provider == "" {
+		provider = options.ID
+	}
+	if options.Session != "" {
+		username += "-session-" + options.Session
+	}
 	return Spec{
-		ID: options.ID, Provider: options.ID, Country: options.Country, City: options.City,
-		Kind: KindDirectSocks, SocksAddr: options.URL.Host,
+		ID: options.ID, Provider: provider, Country: options.Country, City: options.City,
+		Rotating: options.Rotating,
+		Kind:     KindDirectSocks, SocksAddr: options.URL.Host,
 		socksUsername: username, socksPassword: password,
 	}, nil
 }

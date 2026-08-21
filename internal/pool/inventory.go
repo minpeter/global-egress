@@ -67,7 +67,7 @@ func (p *Pool) Slots(filter SlotFilter) []SlotInfo {
 		if filter.OpenOnly && !state.isOpen() {
 			continue
 		}
-		if filter.WithIP && !state.publicIP.IsValid() {
+		if filter.WithIP && (state.spec.Rotating || !state.publicIP.IsValid()) {
 			continue
 		}
 		info := SlotInfo{
@@ -85,7 +85,7 @@ func (p *Pool) Slots(filter SlotFilter) []SlotInfo {
 			BytesReceived: state.bytesReceived,
 			Cooldowns:     len(state.cooldowns),
 		}
-		if state.publicIP.IsValid() {
+		if state.publicIP.IsValid() && !state.spec.Rotating {
 			info.PublicIP = state.publicIP.String()
 		}
 		if !state.ipCheckedAt.IsZero() {
@@ -203,7 +203,7 @@ func (p *Pool) Stats() Stats {
 		if now.Before(state.disabledUntil) {
 			stats.Disabled++
 		}
-		if state.publicIP.IsValid() {
+		if state.publicIP.IsValid() && !state.spec.Rotating {
 			stats.KnownIPs++
 			ips[state.publicIP] = struct{}{}
 		}
@@ -584,7 +584,7 @@ func (p *Pool) SaveInventory(path string) error {
 		Health:     make(map[string]inventoryHealth),
 	}
 	for id, state := range p.slots {
-		if state.publicIP.IsValid() {
+		if state.publicIP.IsValid() && !state.spec.Rotating {
 			file.Slots[id] = inventoryIP{
 				PublicIP:  state.publicIP.String(),
 				CheckedAt: state.ipCheckedAt,
@@ -711,7 +711,7 @@ func (p *Pool) UniquePublicIPs() []string {
 	defer p.mu.Unlock()
 	seen := make(map[string]struct{})
 	for _, state := range p.slots {
-		if state.publicIP.IsValid() {
+		if state.publicIP.IsValid() && !state.spec.Rotating {
 			seen[state.publicIP.String()] = struct{}{}
 		}
 	}
