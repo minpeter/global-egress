@@ -135,6 +135,27 @@ func TestObserveRequestDefaultsTimeoutPhaseToUnknown(t *testing.T) {
 	}
 }
 
+func TestObserveRequestClampsOutOfSetTimeoutPhaseToUnknown(t *testing.T) {
+	p := newTestPool(t, Options{})
+
+	// TimeoutPhase is a string alias, so a caller can pass any value. The scrape
+	// still has to emit only the closed set; a free-form label would grow with
+	// whoever typed it.
+	p.ObserveRequest(RequestObservation{
+		Result:       RequestTimeout,
+		TimeoutPhase: TimeoutPhase("request-user-value"),
+		Duration:     time.Second,
+	})
+
+	timeouts := p.Metrics().RequestTimeouts
+	if len(timeouts) != 1 {
+		t.Fatalf("timeouts = %+v, want a single unknown-phase series", timeouts)
+	}
+	if timeouts[0].Phase != TimeoutPhaseUnknown {
+		t.Fatalf("timeout phase = %q, want %q", timeouts[0].Phase, TimeoutPhaseUnknown)
+	}
+}
+
 func TestEntryStatesReportBoundedHealthCounts(t *testing.T) {
 	p := newRelayPool(t, Options{})
 
