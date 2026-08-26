@@ -442,6 +442,7 @@ func TestTunnelBudgetDoesNotGateRelaySlots(t *testing.T) {
 	}
 	if state == nil {
 		t.Fatal("pick returned no slot")
+		return
 	}
 	if state.spec.Kind != KindRelaySocks {
 		t.Errorf("picked kind %v, want relay-socks", state.spec.Kind)
