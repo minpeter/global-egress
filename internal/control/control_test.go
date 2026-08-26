@@ -375,6 +375,26 @@ func TestClientACL(t *testing.T) {
 	}
 }
 
+// The binary's own healthcheck and same-host operator tooling probe the control
+// API over loopback. An ACL that lists only remote CIDRs - as the container
+// config example does - must not lock that probe out, or Docker reports a
+// serving container as unhealthy.
+func TestClientACLAllowsLoopback(t *testing.T) {
+	server, _ := newTestServer(t, Options{
+		AllowedClients: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")},
+	})
+
+	for _, remoteAddr := range []string{"127.0.0.1:40000", "[::1]:40000"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d for %s, want 200: loopback is inside the trust boundary", rec.Code, remoteAddr)
+		}
+	}
+}
+
 func TestBearerToken(t *testing.T) {
 	server, _ := newTestServer(t, Options{Token: "s3cret"})
 

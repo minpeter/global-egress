@@ -115,6 +115,12 @@ func (s *Server) checkClient(remoteAddr string) error {
 		return fmt.Errorf("cannot parse client address %q", remoteAddr)
 	}
 	addr = addr.Unmap()
+	// Loopback is inside the trust boundary: the binary's own healthcheck and
+	// same-host tooling probe over it, and an ACL naming only remote CIDRs must
+	// not lock them out. Bearer-token auth still applies to loopback requests.
+	if addr.IsLoopback() {
+		return nil
+	}
 	for _, prefix := range s.opts.AllowedClients {
 		if prefix.Addr().Is4() == addr.Is4() && prefix.Contains(addr) {
 			return nil

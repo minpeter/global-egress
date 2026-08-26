@@ -8,6 +8,7 @@
 //	inspect  summarise a catalog without connecting anywhere
 //	probe    measure the real public IP of each slot and store the inventory
 //	serve    run the SOCKS5/HTTP proxies and the control API
+//	healthcheck  probe the control API's liveness endpoint and exit 0 or 1
 //	version  print the build version
 package main
 
@@ -82,6 +83,8 @@ func main() {
 		err = runProbe(ctx, os.Args[2:])
 	case "serve":
 		err = runServe(ctx, os.Args[2:])
+	case "healthcheck":
+		err = runHealthcheck(ctx, os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(buildVersion())
 	case "help", "--help", "-h":
@@ -111,6 +114,7 @@ usage:
   global-egress nordvpn [-key <file>] [-dir <catalog-dir>] [-country cc] [-limit N]
   global-egress probe   -catalog <dir|zip> [-limit N] [-concurrency N] [-country cc]
   global-egress serve   -config <config.toml>
+  global-egress healthcheck [-url <url>] [-timeout 2s] [-token-file <file>]
   global-egress version
 
 Run any subcommand with -h for its flags.

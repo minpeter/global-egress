@@ -371,7 +371,7 @@ Bound to an internal address, optionally protected by a bearer token.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /healthz` | Liveness |
+| `GET /healthz` | Liveness; also what `global-egress healthcheck` probes |
 | `GET /v1/info` | Version, uptime, slot count |
 | `GET /v1/stats` | Open tunnels, unique IPs, sessions, counters |
 | `GET /v1/metrics` | Prometheus request, country, payload, and tunnel lifecycle metrics |
