@@ -14,12 +14,12 @@ printf 'changeme\n' > proxy-password
 # config.example.toml sets access.control_token_file, so this file is required:
 # serve refuses to start without it, and the health check authenticates with it.
 openssl rand -hex 32 > control-token
-# Every secret is read by uid 65532 inside the container. Hand ownership to that
-# uid and strip group/other access instead of leaving files world-readable:
-# mode 644 lets any local user (and any other container mounting the directory)
-# read your proxy password and control token.
-sudo chown 65532:65532 proxy-password control-token
-sudo chmod 600 proxy-password control-token
+# The config and both secrets are read by uid 65532 inside the container. Hand
+# ownership to that uid and strip group/other access instead of leaving files
+# world-readable: mode 644 lets any local user (and any other container mounting
+# the directory) read your proxy password and control token.
+sudo chown 65532:65532 config.toml proxy-password control-token
+sudo chmod 600 config.toml proxy-password control-token
 # Create the private catalog before placing any provider key material in it.
 install -d -m 0700 catalog
 # copy provider .conf files into catalog/, or drop a .zip there and set
@@ -49,7 +49,7 @@ curl -x http://cc=jp:changeme@127.0.0.1:3128 https://am.i.mullvad.net/ip
 
 | Host path | Container path | Notes |
 |---|---|---|
-| `config.toml` | `/etc/global-egress/config.toml` | required |
+| `config.toml` | `/etc/global-egress/config.toml` | required; owned by uid 65532, mode `0600` |
 | `proxy-password` | `/etc/global-egress/proxy-password` | owned by uid 65532, mode `0600` |
 | `control-token` | `/etc/global-egress/control-token` | required by `access.control_token_file`; owned by uid 65532, mode `0600` |
 | `catalog/` | `/catalog` | WireGuard key material; dir mode `0700`, files `0600`, owned by uid 65532 |
