@@ -197,7 +197,9 @@ func (p *Pool) ObserveRequest(observation RequestObservation) {
 	histogram.observe(requestDurationBuckets, observation.Duration.Seconds())
 	if observation.Result == RequestTimeout {
 		phase := observation.TimeoutPhase
-		if phase == "" {
+		switch phase {
+		case TimeoutPhaseAcquire, TimeoutPhaseUpstream, TimeoutPhaseUnknown:
+		default:
 			phase = TimeoutPhaseUnknown
 		}
 		p.metrics.requestTimeouts[timeoutMetricKey{phase: phase, country: country, entry: entry}]++
