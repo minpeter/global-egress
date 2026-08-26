@@ -3,6 +3,9 @@
 # Prerequisites (in this directory, or override with env / compose overrides):
 #   config.toml          from config.example.toml
 #   proxy-password       single-line shared secret for proxy clients
+#   control-token        single-line control API bearer token; required because
+#                        config.example.toml sets access.control_token_file, and
+#                        the health check authenticates with the same file
 #   catalog/             provider .conf files, or a .zip
 #
 #   docker compose -f deploy/docker/docker-compose.yml up -d
@@ -34,17 +37,24 @@ services:
     volumes:
       - ./config.toml:/etc/global-egress/config.toml:ro
       - ./proxy-password:/etc/global-egress/proxy-password:ro
+      - ./control-token:/etc/global-egress/control-token:ro
       - ./catalog:/catalog:ro
       - state:/var/lib/global-egress
     # The image has no shell, so the binary probes its own control API. Exec form
-    # is required. Add -token-file when access.control_token_file is set, so the
-    # secret stays in the mounted file and never lands in `docker inspect`.
+    # is required: there is no /bin/sh to expand a string.
+    #
+    # -token-file matches access.control_token_file in config.example.toml. A
+    # configured control token is checked on every control request including
+    # GET /healthz, so an unauthenticated probe gets 401 and would report a
+    # healthy container as unhealthy. Reading the token from the mounted file
+    # keeps it out of the image, this file, and `docker inspect`.
+    #
+    # Drop both this flag and the ./control-token mount if you remove
+    # access.control_token_file from config.toml.
     healthcheck:
       test:
-        ["CMD", "/usr/local/bin/global-egress", "healthcheck"]
-        # with a control token:
-        # ["CMD", "/usr/local/bin/global-egress", "healthcheck",
-        #  "-token-file", "/etc/global-egress/control-token"]
+        ["CMD", "/usr/local/bin/global-egress", "healthcheck",
+         "-token-file", "/etc/global-egress/control-token"]
       interval: 30s
       timeout: 5s
       start_period: 20s

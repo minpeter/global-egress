@@ -9,7 +9,13 @@ Unprivileged single-container deploy. Userspace WireGuard needs no
 cd deploy/docker
 cp config.example.toml config.toml
 printf 'changeme\n' > proxy-password
-chmod 600 proxy-password
+# config.example.toml sets access.control_token_file, so this file is required:
+# serve refuses to start without it, and the health check authenticates with it.
+openssl rand -hex 32 > control-token
+# Both secrets are read by uid 65532 inside the container, so mode 600 owned by
+# your host user makes serve exit with "read secret ...: permission denied".
+# Keep the directory private and let the files be readable, or chown 65532.
+chmod 644 proxy-password control-token
 mkdir -p catalog
 # copy provider .conf files into catalog/, or drop a .zip there and set
 # catalog.path under [providers.catalog] in config.toml to the zip path under /catalog/...
@@ -34,7 +40,8 @@ curl -x http://cc=jp:changeme@127.0.0.1:3128 https://am.i.mullvad.net/ip
 | Host path | Container path | Notes |
 |---|---|---|
 | `config.toml` | `/etc/global-egress/config.toml` | required |
-| `proxy-password` | `/etc/global-egress/proxy-password` | mode 600 |
+| `proxy-password` | `/etc/global-egress/proxy-password` | readable by uid 65532 |
+| `control-token` | `/etc/global-egress/control-token` | required by `access.control_token_file`; readable by uid 65532 |
 | `catalog/` | `/catalog` | WireGuard key material; keep private |
 | named volume `state` | `/var/lib/global-egress` | IP inventory + relay cache |
 
@@ -68,27 +75,39 @@ docker compose ps                     # STATUS shows (healthy) once /healthz ans
 docker inspect --format '{{json .State.Health}}' <container> | jq
 ```
 
-The Dockerfile ships a default `HEALTHCHECK` that probes
-`http://127.0.0.1:8080/healthz` with a 2s timeout. Override the command when you
-change the control listener address or protect it with a token:
-
 | Flag | Default | Purpose |
 |---|---|---|
 | `-url` | `http://127.0.0.1:8080/healthz` | endpoint to probe |
 | `-timeout` | `2s` | bound the probe so Docker never has to kill it |
 | `-token-file` | none | file holding the control API bearer token |
 
-When `access.control_token_file` is set, `/healthz` answers `401` without a token
-and the container would look unhealthy while it is serving fine. Point the probe
-at the same mounted secret — never at a literal token, which `docker inspect`
-would expose:
+The **image** ships a tokenless default `HEALTHCHECK` against
+`http://127.0.0.1:8080/healthz`, which is right for a deployment that configures
+no control token.
+
+The **compose service overrides it** to pass `-token-file`, because
+`config.example.toml` sets `access.control_token_file`. A configured control token
+is verified on every control request, including `GET /healthz`: the
+mutating-auth policy decides when a token is *required*, not whether an existing
+one is *checked*. So an unauthenticated probe against a token-configured instance
+gets `401`, and Docker would report a perfectly healthy container as unhealthy
+after three retries.
+
+The probe reads the secret from the mounted file, never from a flag value, so it
+stays out of the image, the compose file and `docker inspect`:
 
 ```yaml
+    volumes:
+      - ./control-token:/etc/global-egress/control-token:ro
     healthcheck:
       test:
         ["CMD", "/usr/local/bin/global-egress", "healthcheck",
          "-token-file", "/etc/global-egress/control-token"]
 ```
+
+If you remove `access.control_token_file` from `config.toml`, drop the flag and
+the mount together; the two are checked against each other by
+`internal/config` tests, so they cannot drift apart silently.
 
 Use the exec form (`["CMD", ...]`), not the shell form (`CMD-SHELL`): there is no
 `/bin/sh` in the image to interpret it. A shell-form probe fails with
@@ -97,8 +116,10 @@ reported unhealthy while it is serving normally. `docker run --health-cmd` alway
 uses the shell form, so verify health through Compose or the image default rather
 than that flag.
 
-A token file must be readable by uid `65532`; a host file at mode `600` owned by
-another user makes `serve` exit with `read secret ...: permission denied`.
+Every mounted secret must be readable by uid `65532`. A host file at mode `600`
+owned by another user makes `serve` exit with
+`config: read secret ...: permission denied` before it opens a listener, and the
+container restarts in a loop rather than reporting unhealthy.
 
 ## Sizing
 

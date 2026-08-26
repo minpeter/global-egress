@@ -15,3 +15,10 @@ and the binary probes itself. The probe is bounded by `-timeout` (2s default) so
 Docker never has to kill it, and reads a bearer token from `-token-file` when the
 control API requires one, keeping the secret out of the image, the Compose file,
 and `docker inspect`.
+
+The image keeps a tokenless default probe. The Compose service passes
+`-token-file` and mounts `./control-token` read-only, because the container config
+example sets `access.control_token_file` and a configured token is checked on
+every control request including `GET /healthz`; an unauthenticated probe would
+report a healthy container as unhealthy. The Compose command and the config
+example are pinned to each other by tests so they cannot drift.
