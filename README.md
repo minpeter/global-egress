@@ -106,15 +106,15 @@ default public-IP check calls `am.i.mullvad.net`. Unparsed names simply leave
 | | `relay-socks` (default) | `wireguard` |
 |---|---|---|
 | A slot is | a Mullvad relay's SOCKS proxy, reached through an entry tunnel | its own userspace WireGuard tunnel |
-| Exit addresses | ~530, one per relay | one per tunnel |
+| Exit addresses | one per relay, measured (~530 on a 532-relay bundle) | one per tunnel |
 | Cost of rotating | one TCP connection | one WireGuard handshake |
 | Key associations | 2-3 total, long-lived | one per slot |
 | Memory for the whole catalog | ~20 MiB | ~850 MiB |
 
 Providers restrict how quickly one device key may associate with new relays.
-Measured on a 532-relay bundle: sweeping the catalog as WireGuard tunnels tripped
-that limit after 219 relays in under three minutes and the key stopped
-handshaking anywhere for hours. `relay-socks` moves rotation off that path
+Measured on 2026-07-28 with a 532-relay bundle: sweeping the catalog as WireGuard
+tunnels tripped that limit after 219 relays in under three minutes, and the key
+stopped handshaking anywhere for hours. `relay-socks` moves rotation off that path
 entirely — the key stays on two or three relays, and exits change by opening a
 TCP connection to another relay's proxy from inside the tunnel. See
 [docs/capacity.md](docs/capacity.md) for the numbers.
@@ -371,7 +371,7 @@ Bound to an internal address, optionally protected by a bearer token.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /healthz` | Liveness |
+| `GET /healthz` | Liveness; also what `global-egress healthcheck` probes |
 | `GET /v1/info` | Version, uptime, slot count |
 | `GET /v1/stats` | Open tunnels, unique IPs, sessions, counters |
 | `GET /v1/metrics` | Prometheus request, country, payload, and tunnel lifecycle metrics |
@@ -413,11 +413,17 @@ slowed down deliberately.
 once. Tunnels open on demand, idle ones are closed, and the least recently used
 one is evicted when the budget is full. Start low, measure, then raise it.
 
-**Slot count is not IP count — verify it.** `global-egress probe` measures the
-real exit IP of each slot and stores an inventory, and `uniq=` batches are
-enforced against those measured addresses rather than server names. On a 532-slot
-Mullvad bundle every reachable slot turned out to have its own address (456
-slots, 456 distinct IPs), but that is a property of the provider, not a promise.
+**Slot count is not IP count — verify it.** A slot is a catalogue entry; a
+measured IP is what a probe actually saw. `global-egress probe` measures the real
+exit IP of each slot and stores an inventory, and `uniq=` batches are enforced
+against those measured addresses rather than server names. `/v1/stats` reports the
+two separately (`slots` against `slots_with_known_ip` and `unique_public_ips`), and
+that pair, not any number in this repository, is the current state of your
+deployment. On a 532-slot Mullvad bundle in July 2026, every reachable slot had its
+own address across three separate runs, which measured 524, 529 and 456 addresses
+depending on mode and concurrency. Zero duplicates is what held; the total is not a
+promise. The runs are logged in
+[docs/capacity.md](docs/capacity.md#exit-ip-measurement-log).
 
 **Entry failures are attributed to the entry.** A tunnel that is up but no longer
 carrying traffic can only be detected by the dials riding on it. Three consecutive
@@ -460,7 +466,7 @@ measurements behind the design.
 
 ## Requirements
 
-- Go 1.25.12 or newer (the minor version comes from `golang.org/x/net` and
+- Go 1.25.13 or newer (the minor version comes from `golang.org/x/net` and
   `golang.org/x/crypto`; the patch version from reachable stdlib vulnerabilities in
   earlier 1.25 releases)
 - Linux for deployment; the code also compiles for darwin/arm64
@@ -638,7 +644,9 @@ MIT. See [LICENSE](LICENSE).
   connection keeps the same exit IP; make a new connection (or change `sess=`) to
   move.
 - `uniq=` can only guarantee as many distinct IPs as the bundle actually has, and
-  only for slots whose IP has been measured.
+  only for slots whose IP has been measured. Check `unique_public_ips` in
+  `/v1/stats` before promising a batch size; the slot count is an upper bound, not
+  the answer.
 - Measuring a whole large bundle takes hours, because handshakes must be paced to
   stay under the provider's per-key rate limit.
 - In `relay-socks` mode the destination is resolved at the exit relay, so a host

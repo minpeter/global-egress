@@ -82,7 +82,7 @@ func do(t *testing.T, server *Server, method, target, body string, headers map[s
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, target, reader)
-	req.RemoteAddr = "10.0.0.5:40000"
+	req.RemoteAddr = "127.0.0.1:40000"
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
@@ -176,6 +176,35 @@ func TestMetricsExposition(t *testing.T) {
 		`global_egress_request_results_total{result="no_candidate",country="unknown",entry="none"} 1`,
 		`global_egress_requested_country_total{country="jp"} 1`,
 		`global_egress_request_duration_seconds_count{result="no_candidate",country="unknown",entry="none"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsExposesTimeoutPhaseAndEntryHealth(t *testing.T) {
+	server, egressPool := newTestServer(t, Options{})
+	egressPool.ObserveRequest(pool.RequestObservation{
+		Result:           pool.RequestTimeout,
+		TimeoutPhase:     pool.TimeoutPhaseAcquire,
+		RequestedCountry: "jp",
+		Duration:         2 * time.Second,
+	})
+
+	rec := do(t, server, http.MethodGet, "/v1/metrics", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE global_egress_request_timeouts_total counter",
+		`global_egress_request_timeouts_total{phase="acquire",country="unknown",entry="none"} 1`,
+		"# TYPE global_egress_entry_state gauge",
+		`global_egress_entry_state{state="open"} 0`,
+		`global_egress_entry_state{state="idle"} 0`,
+		`global_egress_entry_state{state="disabled"} 0`,
+		"# TYPE global_egress_entry_failures_total counter",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q:\n%s", want, body)
@@ -337,8 +366,32 @@ func TestClientACL(t *testing.T) {
 		t.Fatalf("status = %d, want 403 for a client outside the ACL", rec.Code)
 	}
 
-	if rec := do(t, server, http.MethodGet, "/v1/stats", "", nil); rec.Code != http.StatusOK {
+	req = httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+	req.RemoteAddr = "10.0.0.5:1234"
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 for an allowed client", rec.Code)
+	}
+}
+
+// The binary's own healthcheck and same-host operator tooling probe the control
+// API over loopback. An ACL that lists only remote CIDRs - as the container
+// config example does - must not lock that probe out, or Docker reports a
+// serving container as unhealthy.
+func TestClientACLAllowsLoopback(t *testing.T) {
+	server, _ := newTestServer(t, Options{
+		AllowedClients: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")},
+	})
+
+	for _, remoteAddr := range []string{"127.0.0.1:40000", "[::1]:40000"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d for %s, want 200: loopback is inside the trust boundary", rec.Code, remoteAddr)
+		}
 	}
 }
 
@@ -355,5 +408,66 @@ func TestBearerToken(t *testing.T) {
 	if rec := do(t, server, http.MethodGet, "/v1/stats", "",
 		map[string]string{"Authorization": "Bearer s3cret"}); rec.Code != http.StatusOK {
 		t.Errorf("valid token status = %d, want 200", rec.Code)
+	}
+}
+
+func TestBearerTokenRejectsEmptyConfiguredToken(t *testing.T) {
+	server, _ := newTestServer(t, Options{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/report", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	if server.tokenOK(req) {
+		t.Fatal("empty configured token accepted an empty bearer value")
+	}
+}
+
+func TestNonLoopbackReadOnlyEndpointsRemainOpenWithoutToken(t *testing.T) {
+	server, _ := newTestServer(t, Options{})
+	for _, path := range []string{"/healthz", "/v1/stats", "/v1/metrics"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "10.0.0.5:40000"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", path, rec.Code)
+		}
+	}
+}
+
+func TestNonLoopbackMutationsFailClosedWithoutChangingState(t *testing.T) {
+	server, egressPool := newTestServer(t, Options{})
+	before := egressPool.Stats()
+	cases := []struct {
+		method, path, body string
+	}{
+		{http.MethodPost, "/v1/sessions/job-1/rotate", ""},
+		{http.MethodDelete, "/v1/sessions/job-1", ""},
+		{http.MethodPost, "/v1/report", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"example.com"}`},
+		{http.MethodPost, "/v1/prefer", `{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"example.com"}`},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.RemoteAddr = "10.0.0.5:40000"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+	}
+	if after := egressPool.Stats(); after != before {
+		t.Errorf("unauthorized mutations changed pool state: before %+v, after %+v", before, after)
+	}
+}
+
+func TestNonLoopbackMutationWithTokenSucceeds(t *testing.T) {
+	server, _ := newTestServer(t, Options{Token: "s3cret"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/report", strings.NewReader(
+		`{"slot":"jp-tyo-wg-001","public_ip":"203.0.113.10","scope":"example.com"}`))
+	req.RemoteAddr = "10.0.0.5:40000"
+	req.Header.Set("Authorization", "Bearer s3cret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authorized report status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
 }

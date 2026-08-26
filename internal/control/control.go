@@ -73,12 +73,33 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	if s.opts.Token != "" && !s.tokenOK(r) {
+	if (s.requiresMutationAuth(r) && !s.loopbackClient(r.RemoteAddr) || s.opts.Token != "") &&
+		!s.tokenOK(r) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="global-egress"`)
 		writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// requiresMutationAuth identifies control operations that can change pool
+// state. Read-only endpoints intentionally retain their historical policy.
+func (s *Server) requiresMutationAuth(r *http.Request) bool {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		return false
+	}
+	return r.URL.Path == "/v1/report" || r.URL.Path == "/v1/prefer" ||
+		strings.HasSuffix(r.URL.Path, "/rotate") ||
+		strings.HasPrefix(r.URL.Path, "/v1/sessions/") && r.Method == http.MethodDelete
+}
+
+func (s *Server) loopbackClient(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
 }
 
 func (s *Server) checkClient(remoteAddr string) error {
@@ -94,6 +115,12 @@ func (s *Server) checkClient(remoteAddr string) error {
 		return fmt.Errorf("cannot parse client address %q", remoteAddr)
 	}
 	addr = addr.Unmap()
+	// Loopback is inside the trust boundary: the binary's own healthcheck and
+	// same-host tooling probe over it, and an ACL naming only remote CIDRs must
+	// not lock them out. Bearer-token auth still applies to loopback requests.
+	if addr.IsLoopback() {
+		return nil
+	}
 	for _, prefix := range s.opts.AllowedClients {
 		if prefix.Addr().Is4() == addr.Is4() && prefix.Contains(addr) {
 			return nil
@@ -103,6 +130,9 @@ func (s *Server) checkClient(remoteAddr string) error {
 }
 
 func (s *Server) tokenOK(r *http.Request) bool {
+	if s.opts.Token == "" {
+		return false
+	}
 	header := r.Header.Get("Authorization")
 	scheme, value, found := strings.Cut(header, " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") {

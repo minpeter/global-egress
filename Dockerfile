@@ -3,7 +3,7 @@
 # Multi-stage build: static binary into a distroless image.
 # Userspace WireGuard needs no /dev/net/tun, NET_ADMIN, or root.
 
-ARG GO_VERSION=1.25.12
+ARG GO_VERSION=1.25.13
 
 FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
@@ -41,6 +41,12 @@ COPY --from=build --chown=nonroot:nonroot /out/global-egress /usr/local/bin/glob
 USER nonroot:nonroot
 
 EXPOSE 1080 3128 8080
+
+# The image has no shell, curl, or wget, so the binary probes itself. Exec form
+# only: there is no /bin/sh to parse a string. Override the command in compose
+# when the control API requires a bearer token (-token-file).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+	CMD ["/usr/local/bin/global-egress", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/global-egress"]
 CMD ["serve", "-config", "/etc/global-egress/config.toml"]
