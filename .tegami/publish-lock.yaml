@@ -1,11 +1,15 @@
 core:changelogs:
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Export the collector control token path\n\nPass `CONTROL_TOKEN_FILE` from the OpenRC confd into the metrics collector process so authenticated control scraping works after restart.\n"
-    filename: 2026-08-27-openrc-collector-token-export.md
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Stop recommending world-readable Docker secrets\n\nReplace the `chmod 644` instruction in the Docker deploy guide with a least-privilege flow: uid 65532 ownership with mode `0600` on `proxy-password` and `control-token`, mode `0700` on the catalog directory, and `0600` on provider key files, plus an explanation of the host-ownership tradeoff.\n"
+    filename: 2026-08-26-docker-secret-permissions.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Clamp timeout-phase metrics to the closed set\n\n`TimeoutPhase` is a string alias, so a caller can pass any value into\n`ObserveRequest`. The scrape still has to emit only `acquire`, `upstream`, or\n`unknown`: a free-form `phase` label would grow with whoever typed it.\n\nThe metrics boundary now switches on the closed set and records anything else\nas `unknown`. Empty and omitted phases already landed there; out-of-set values\nnow do too. No new label was added.\n"
+    filename: 2026-08-27-timeout-phase-bound.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-08-27-openrc-collector-token-export.md
+      - 2026-08-26-docker-secret-permissions.md
+      - 2026-08-27-timeout-phase-bound.md
     id: go:github.com/minpeter/global-egress
     updated: true
 go-root:version:
-  - version: 0.0.3
+  - version: 0.0.4
