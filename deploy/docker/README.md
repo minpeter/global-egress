@@ -12,13 +12,20 @@ printf 'changeme\n' > proxy-password
 # config.example.toml sets access.control_token_file, so this file is required:
 # serve refuses to start without it, and the health check authenticates with it.
 openssl rand -hex 32 > control-token
-# Both secrets are read by uid 65532 inside the container, so mode 600 owned by
-# your host user makes serve exit with "read secret ...: permission denied".
-# Keep the directory private and let the files be readable, or chown 65532.
-chmod 644 proxy-password control-token
+# Every secret is read by uid 65532 inside the container. Hand ownership to that
+# uid and strip group/other access instead of leaving files world-readable:
+# mode 644 lets any local user (and any other container mounting the directory)
+# read your proxy password and control token.
+sudo chown 65532:65532 proxy-password control-token
+sudo chmod 600 proxy-password control-token
 mkdir -p catalog
 # copy provider .conf files into catalog/, or drop a .zip there and set
 # catalog.path under [providers.catalog] in config.toml to the zip path under /catalog/...
+# The catalog holds WireGuard private keys, so lock it down the same way:
+# mode 700 on the directory, 600 on every key file.
+sudo chown -R 65532:65532 catalog
+sudo chmod 700 catalog
+sudo find catalog -type f -exec chmod 600 {} +
 
 # build locally
 docker compose up -d --build
@@ -40,9 +47,9 @@ curl -x http://cc=jp:changeme@127.0.0.1:3128 https://am.i.mullvad.net/ip
 | Host path | Container path | Notes |
 |---|---|---|
 | `config.toml` | `/etc/global-egress/config.toml` | required |
-| `proxy-password` | `/etc/global-egress/proxy-password` | readable by uid 65532 |
-| `control-token` | `/etc/global-egress/control-token` | required by `access.control_token_file`; readable by uid 65532 |
-| `catalog/` | `/catalog` | WireGuard key material; keep private |
+| `proxy-password` | `/etc/global-egress/proxy-password` | owned by uid 65532, mode `0600` |
+| `control-token` | `/etc/global-egress/control-token` | required by `access.control_token_file`; owned by uid 65532, mode `0600` |
+| `catalog/` | `/catalog` | WireGuard key material; dir mode `0700`, files `0600`, owned by uid 65532 |
 | named volume `state` | `/var/lib/global-egress` | IP inventory + relay cache |
 
 The image user is distroless `nonroot` (uid 65532). The image seeds
@@ -126,6 +133,17 @@ Every mounted secret must be readable by uid `65532`. A host file at mode `600`
 owned by another user makes `serve` exit with
 `config: read secret ...: permission denied` before it opens a listener, and the
 container restarts in a loop rather than reporting unhealthy.
+
+The tradeoff of `chown 65532:65532` is that the files stop belonging to your host
+user: reading or rotating them later needs `sudo`, and your editor or backup
+tools can no longer touch them directly. That is the point. The container needs
+read access and nothing else does, so owner-only `0600` is the smallest
+permission that works. Don't reach for `644` just to spare yourself the
+`sudo`: bind mounts share the host's uid map, so a world-readable mode
+exposes the secret to every local account and every other container that mounts
+the directory. If several host admins genuinely need shared read access, use a
+dedicated group (`chown 65532:<group>`, mode `0640`) rather than opening the
+files to everyone.
 
 ## Sizing
 
