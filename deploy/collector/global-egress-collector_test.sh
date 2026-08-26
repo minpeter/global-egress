@@ -2,6 +2,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+OPENRC="$ROOT/deploy/collector/global-egress-metrics.openrc"
+grep -Eq '^export CONTROL CONTROL_TOKEN_FILE$' "$OPENRC"
 TMP=$(mktemp -d)
 PIDS=
 trap 'kill $PIDS 2>/dev/null || true; rm -rf "$TMP"' EXIT

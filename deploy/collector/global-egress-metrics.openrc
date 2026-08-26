@@ -4,7 +4,8 @@ description="Write global-egress metrics into the node_exporter textfile collect
 
 # Overridden in /etc/conf.d/global-egress-metrics, which OpenRC sources for us.
 : "${CONTROL:=http://127.0.0.1:8080}"
-export CONTROL
+: "${CONTROL_TOKEN_FILE:=}"
+export CONTROL CONTROL_TOKEN_FILE
 
 command="/usr/local/bin/global-egress-collector"
 command_background="yes"
