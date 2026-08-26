@@ -7,6 +7,8 @@ Unprivileged single-container deploy. Userspace WireGuard needs no
 
 ```sh
 cd deploy/docker
+# Make every subsequently created secret private from its first write.
+umask 077
 cp config.example.toml config.toml
 printf 'changeme\n' > proxy-password
 # config.example.toml sets access.control_token_file, so this file is required:
@@ -18,7 +20,8 @@ openssl rand -hex 32 > control-token
 # read your proxy password and control token.
 sudo chown 65532:65532 proxy-password control-token
 sudo chmod 600 proxy-password control-token
-mkdir -p catalog
+# Create the private catalog before placing any provider key material in it.
+install -d -m 0700 catalog
 # copy provider .conf files into catalog/, or drop a .zip there and set
 # catalog.path under [providers.catalog] in config.toml to the zip path under /catalog/...
 # The catalog holds WireGuard private keys, so lock it down the same way:
