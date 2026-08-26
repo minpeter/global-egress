@@ -72,7 +72,7 @@ jobs:
         # The oldest supported toolchain is the floor declared in go.mod, which is
         # itself set by what golang.org/x/net and x/crypto require. "stable" catches
         # regressions from new releases before they reach users.
-        go: ["1.25.x", "stable"]
+        go: ["1.25.13", "stable"]
     name: test (go ${{ matrix.go }})
     steps:
       - uses: actions/checkout@v7
