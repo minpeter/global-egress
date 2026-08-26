@@ -1,3 +1,19 @@
+## github.com/minpeter/global-egress@0.0.4
+
+### Stop recommending world-readable Docker secrets
+
+Replace the `chmod 644` instruction in the Docker deploy guide with a least-privilege flow: uid 65532 ownership with mode `0600` on `proxy-password` and `control-token`, mode `0700` on the catalog directory, and `0600` on provider key files, plus an explanation of the host-ownership tradeoff.
+
+### Clamp timeout-phase metrics to the closed set
+
+`TimeoutPhase` is a string alias, so a caller can pass any value into
+`ObserveRequest`. The scrape still has to emit only `acquire`, `upstream`, or
+`unknown`: a free-form `phase` label would grow with whoever typed it.
+
+The metrics boundary now switches on the closed set and records anything else
+as `unknown`. Empty and omitted phases already landed there; out-of-set values
+now do too. No new label was added.
+
 ## github.com/minpeter/global-egress@0.0.3
 
 ### Export the collector control token path
