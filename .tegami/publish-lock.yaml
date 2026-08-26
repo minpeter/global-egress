@@ -1,11 +1,31 @@
 core:changelogs:
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Container packaging and Tegami-managed releases\n\nAdd a distroless Docker image and Compose layout for unprivileged deploys.\nDrive versions with Tegami (`.tegami` entries → Version Packages PR → `vX.Y.Z`\ntag and GitHub Release), then attach static binaries and push multi-arch images\nto GHCR as CI side artifacts.\n\nFirst public tag is `v0.0.1` (no prior tags → baseline `0.0.0`, patch bump).\n"
-    filename: 2026-08-08-docker-and-tegami-release.md
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Fail closed for remote control mutations\n\nRequire bearer authentication for mutating control API requests received from\nnon-loopback clients, while preserving the existing read-only endpoint policy.\n"
+    filename: 2026-08-26-control-mutating-auth.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Container health check without a shell\n\nAdd a `global-egress healthcheck` subcommand that probes the control API's\n`/healthz` and reports the verdict as its exit status, plus a default Docker\n`HEALTHCHECK` and a Compose `healthcheck` block that use it.\n\nThe image is distroless, so there is no `curl` or `wget` to probe from a shell\nand the binary probes itself. The probe is bounded by `-timeout` (2s default) so\nDocker never has to kill it, and reads a bearer token from `-token-file` when the\ncontrol API requires one, keeping the secret out of the image, the Compose file,\nand `docker inspect`.\n\nThe image keeps a tokenless default probe. The Compose service passes\n`-token-file` and mounts `./control-token` read-only, because the container config\nexample sets `access.control_token_file` and a configured token is checked on\nevery control request including `GET /healthz`; an unauthenticated probe would\nreport a healthy container as unhealthy. The Compose command and the config\nexample are pinned to each other by tests so they cannot drift.\n\nThe control API now always permits loopback clients through\n`access.allowed_clients`: the example ACL names only remote CIDRs, and without\nthe exemption the in-container probe would be refused with `403` before token\nauth runs. Bearer-token auth still applies to loopback requests.\n"
+    filename: 2026-08-26-docker-healthcheck.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Require Go 1.25.13\n\nRaise the minimum Go toolchain to 1.25.13, which includes fixes for the reachable\nstandard-library and `golang.org/x/net` vulnerabilities reported by govulncheck.\n"
+    filename: 2026-08-26-go-1-25-13.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Date every exit-IP measurement, and separate slot count from measured IPs\n\nThe README, `docs/operations.md` and `docs/capacity.md` each quoted a different\n\"definitive\" unique-IP total (456, 524, 529) for the same 532-slot bundle, with no\ndate, mode or device attached. They now share one measurement log in\n`docs/capacity.md`, where every row carries its date, mode, bundle and run\nparameters, and the surviving claim is \"one measured address per reachable exit,\nzero duplicates\" rather than any single total.\n\nDocuments also stop standing in for the running service: slot count is a catalogue\nproperty, while `slots_with_known_ip` and `unique_public_ips` in `/v1/stats` (plus\n`/v1/ips`) are the current measured state that `uniq=` batches draw on.\n"
+    filename: 2026-08-26-inventory-measurement-metadata.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Split request timeouts by phase, and expose entry rotation health\n\n`global_egress_request_results_total{result=\"timeout\"}` collapsed two unrelated\nfaults into one number. A timeout before the upstream was ready means pool\ncapacity or handshake latency; a timeout after it was established means the exit\nor the destination. Both arrive as `context.DeadlineExceeded`, so the single\nresult label could not tell an operator which half to look at.\n\n`/v1/metrics` now also carries `global_egress_request_timeouts_total`, labelled\nwith a closed `phase` enum (`acquire`, `upstream`, `unknown`) alongside the\nexisting bounded `country` and `entry` dimensions. The SOCKS5 and HTTP listeners\nreport the phase from the classifier that already decided the result, so no new\nerror handling was introduced.\n\nEntries were the other blind spot: they are the scarce resource — each one costs\na key association — but nothing on the scrape said how many were up, spare, or\nbenched. `global_egress_entry_state{state=\"open\"|\"idle\"|\"disabled\"}` reports the\nrotation breakdown, always emitting all three series so a state never vanishes\nfrom a scrape, and `global_egress_entry_failures_total{reason=\"open\"|\"dial\"}`\nseparates an entry that will not come up from one whose tunnel is up but no\nlonger carrying traffic.\n\nEvery new label is a fixed enum or an existing bounded dimension. No target,\naddress, session or entry-identity label was added, and slot ranking is\nunchanged.\n"
+    filename: 2026-08-26-timeout-phase-entry-observability.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Authenticate the metrics collector\n\nAllow the node-exporter collector to read a protected control token file and authenticate every read-only control API request without exposing the bearer in argv, logs, or Prometheus output.\n"
+    filename: 2026-08-27-collector-control-token.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-08-08-docker-and-tegami-release.md
+      - 2026-08-26-control-mutating-auth.md
+      - 2026-08-26-docker-healthcheck.md
+      - 2026-08-26-go-1-25-13.md
+      - 2026-08-26-inventory-measurement-metadata.md
+      - 2026-08-26-timeout-phase-entry-observability.md
+      - 2026-08-27-collector-control-token.md
     id: go:github.com/minpeter/global-egress
     updated: true
 go-root:version:
-  - version: 0.0.1
+  - version: 0.0.2
