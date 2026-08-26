@@ -58,13 +58,13 @@ a release. Merge the Version Packages PR only when you mean to ship.
 
 ## Supported Go versions
 
-The floor is **Go 1.25.12**, and both parts of that are forced:
+The floor is **Go 1.25.13**, and both parts of that are forced:
 
 - the minor version by `golang.org/x/net` and `golang.org/x/crypto`, which require
   1.25, so Go 1.24 cannot resolve the module graph at all
 - the patch version by `govulncheck`, which found ten reachable standard-library
   vulnerabilities in 1.25.0 - in `crypto/tls`, `net/http`, `crypto/x509`,
-  `net/textproto`, `net/url` and `os` - the last of them fixed in 1.25.12
+  `net/textproto`, `net/url` and `os` - the last of them fixed in 1.25.13
 
 The `vulncheck` job runs against the toolchain named in `go.mod` on purpose. The go
 directive is a promise about the oldest release users may build with, so raising the
