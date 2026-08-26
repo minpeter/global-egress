@@ -42,5 +42,11 @@ USER nonroot:nonroot
 
 EXPOSE 1080 3128 8080
 
+# The image has no shell, curl, or wget, so the binary probes itself. Exec form
+# only: there is no /bin/sh to parse a string. Override the command in compose
+# when the control API requires a bearer token (-token-file).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+	CMD ["/usr/local/bin/global-egress", "healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/global-egress"]
 CMD ["serve", "-config", "/etc/global-egress/config.toml"]

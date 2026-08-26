@@ -58,6 +58,48 @@ publishes multi-arch images:
 - `ghcr.io/minpeter/global-egress:latest`
 - `ghcr.io/minpeter/global-egress:X.Y.Z` (and `:vX.Y.Z`)
 
+## Health check
+
+The image is distroless: no shell, no `curl`, no `wget`. The binary probes itself
+instead, and the container health status is its exit code.
+
+```sh
+docker compose ps                     # STATUS shows (healthy) once /healthz answers
+docker inspect --format '{{json .State.Health}}' <container> | jq
+```
+
+The Dockerfile ships a default `HEALTHCHECK` that probes
+`http://127.0.0.1:8080/healthz` with a 2s timeout. Override the command when you
+change the control listener address or protect it with a token:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `-url` | `http://127.0.0.1:8080/healthz` | endpoint to probe |
+| `-timeout` | `2s` | bound the probe so Docker never has to kill it |
+| `-token-file` | none | file holding the control API bearer token |
+
+When `access.control_token_file` is set, `/healthz` answers `401` without a token
+and the container would look unhealthy while it is serving fine. Point the probe
+at the same mounted secret — never at a literal token, which `docker inspect`
+would expose:
+
+```yaml
+    healthcheck:
+      test:
+        ["CMD", "/usr/local/bin/global-egress", "healthcheck",
+         "-token-file", "/etc/global-egress/control-token"]
+```
+
+Use the exec form (`["CMD", ...]`), not the shell form (`CMD-SHELL`): there is no
+`/bin/sh` in the image to interpret it. A shell-form probe fails with
+`exec: "/bin/sh": stat /bin/sh: no such file or directory` and the container is
+reported unhealthy while it is serving normally. `docker run --health-cmd` always
+uses the shell form, so verify health through Compose or the image default rather
+than that flag.
+
+A token file must be readable by uid `65532`; a host file at mode `600` owned by
+another user makes `serve` exit with `read secret ...: permission denied`.
+
 ## Sizing
 
 Start with `pool.max_active = 25` and about **1 GiB** RAM (compose default). A full

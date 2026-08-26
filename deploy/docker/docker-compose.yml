@@ -36,8 +36,19 @@ services:
       - ./proxy-password:/etc/global-egress/proxy-password:ro
       - ./catalog:/catalog:ro
       - state:/var/lib/global-egress
-    # Distroless has no shell; compose healthcheck would need an external probe.
-    # Use: curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/stats
+    # The image has no shell, so the binary probes its own control API. Exec form
+    # is required. Add -token-file when access.control_token_file is set, so the
+    # secret stays in the mounted file and never lands in `docker inspect`.
+    healthcheck:
+      test:
+        ["CMD", "/usr/local/bin/global-egress", "healthcheck"]
+        # with a control token:
+        # ["CMD", "/usr/local/bin/global-egress", "healthcheck",
+        #  "-token-file", "/etc/global-egress/control-token"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     read_only: true
     tmpfs:
       - /tmp
