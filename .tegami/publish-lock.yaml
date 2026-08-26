@@ -1,15 +1,11 @@
 core:changelogs:
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Stop recommending world-readable Docker secrets\n\nReplace the `chmod 644` instruction in the Docker deploy guide with a least-privilege flow: uid 65532 ownership with mode `0600` on `proxy-password` and `control-token`, mode `0700` on the catalog directory, and `0600` on provider key files, plus an explanation of the host-ownership tradeoff.\n"
-    filename: 2026-08-26-docker-secret-permissions.md
-    v: 0.0.0
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Clamp timeout-phase metrics to the closed set\n\n`TimeoutPhase` is a string alias, so a caller can pass any value into\n`ObserveRequest`. The scrape still has to emit only `acquire`, `upstream`, or\n`unknown`: a free-form `phase` label would grow with whoever typed it.\n\nThe metrics boundary now switches on the closed set and records anything else\nas `unknown`. Empty and omitted phases already landed there; out-of-set values\nnow do too. No new label was added.\n"
-    filename: 2026-08-27-timeout-phase-bound.md
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Create Docker secrets privately from the first write\n\nSet a restrictive umask before creating Docker secrets and create the provider catalog at mode `0700` before placing key material in it, closing the exposure window before the final ownership and permission hardening commands run.\n"
+    filename: 2026-08-27-docker-secret-creation-order.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-08-26-docker-secret-permissions.md
-      - 2026-08-27-timeout-phase-bound.md
+      - 2026-08-27-docker-secret-creation-order.md
     id: go:github.com/minpeter/global-egress
     updated: true
 go-root:version:
-  - version: 0.0.4
+  - version: 0.0.5
