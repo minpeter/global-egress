@@ -93,6 +93,12 @@ one is *checked*. So an unauthenticated probe against a token-configured instanc
 gets `401`, and Docker would report a perfectly healthy container as unhealthy
 after three retries.
 
+`access.allowed_clients` needs no loopback entry for this probe: the control
+API treats loopback as inside the trust boundary, so an ACL naming only remote
+CIDRs - as `config.example.toml` does with `172.16.0.0/12` - still lets the
+in-container probe through. Bearer-token auth still applies to loopback
+requests, which is why `-token-file` is required.
+
 The probe reads the secret from the mounted file, never from a flag value, so it
 stays out of the image, the compose file and `docker inspect`:
 
