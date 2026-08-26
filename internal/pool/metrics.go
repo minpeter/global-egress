@@ -17,6 +17,55 @@ const (
 	RequestTimeout         RequestResult = "timeout"
 )
 
+// TimeoutPhase names the stage a timed-out request died in.
+//
+// A timeout during setup and a timeout mid-stream are different faults with
+// different fixes — the first is pool capacity or handshake latency, the second
+// is the exit or the destination — but both arrive as context.DeadlineExceeded
+// and collapse into one result label. The enum is closed on purpose: the point is
+// a phase breakdown you can alert on, not a free-form annotation.
+type TimeoutPhase string
+
+const (
+	// TimeoutPhaseUnknown covers a timeout whose caller did not name a phase, so
+	// the series stays bounded instead of carrying an empty label.
+	TimeoutPhaseUnknown TimeoutPhase = "unknown"
+	// TimeoutPhaseAcquire is a timeout before the upstream was ready: slot
+	// selection, tunnel handshake, or the dial to the destination.
+	TimeoutPhaseAcquire TimeoutPhase = "acquire"
+	// TimeoutPhaseUpstream is a timeout after the upstream was established, while
+	// the request was being served through it.
+	TimeoutPhaseUpstream TimeoutPhase = "upstream"
+)
+
+// EntryHealth is a bounded rotation state for one entry tunnel.
+//
+// Entries are the scarce resource — each one costs a key association — so what
+// matters operationally is how many are up, how many are spare and how many the
+// pool has benched. Entry identity is deliberately absent: the count is bounded by
+// the three states, whereas a per-entry label grows with the provider's fleet.
+type EntryHealth string
+
+const (
+	// EntryHealthOpen is an entry with a live tunnel, available for routing.
+	EntryHealthOpen EntryHealth = "open"
+	// EntryHealthIdle is an entry eligible for routing whose tunnel is not up yet.
+	EntryHealthIdle EntryHealth = "idle"
+	// EntryHealthDisabled is an entry backed off after repeated failures.
+	EntryHealthDisabled EntryHealth = "disabled"
+)
+
+// EntryFailureReason is a bounded cause for taking an entry off the happy path.
+type EntryFailureReason string
+
+const (
+	// EntryFailureOpen is a failure to bring the entry tunnel up at all.
+	EntryFailureOpen EntryFailureReason = "open"
+	// EntryFailureDial is a failure dialling through an entry whose tunnel is up,
+	// which is the fault that would otherwise be blamed on the exits.
+	EntryFailureDial EntryFailureReason = "dial"
+)
+
 // TunnelRole identifies a bounded class of WireGuard tunnel.
 type TunnelRole string
 
@@ -40,6 +89,12 @@ var (
 
 type requestMetricKey struct {
 	result  RequestResult
+	country string
+	entry   string
+}
+
+type timeoutMetricKey struct {
+	phase   TimeoutPhase
 	country string
 	entry   string
 }
@@ -87,12 +142,14 @@ type payloadTotals struct {
 type metricsState struct {
 	requests           map[requestMetricKey]uint64
 	requestDurations   map[requestMetricKey]*histogramMetric
+	requestTimeouts    map[timeoutMetricKey]uint64
 	requestedCountries map[string]uint64
 	selectedCountries  map[string]uint64
 	fallbacks          map[fallbackMetricKey]uint64
 	payloads           map[payloadMetricKey]payloadTotals
 	tunnelOpens        map[tunnelMetricKey]uint64
 	tunnelDurations    map[tunnelMetricKey]*histogramMetric
+	entryFailures      map[EntryFailureReason]uint64
 }
 
 func (m *metricsState) ensure() {
@@ -101,12 +158,14 @@ func (m *metricsState) ensure() {
 	}
 	m.requests = make(map[requestMetricKey]uint64)
 	m.requestDurations = make(map[requestMetricKey]*histogramMetric)
+	m.requestTimeouts = make(map[timeoutMetricKey]uint64)
 	m.requestedCountries = make(map[string]uint64)
 	m.selectedCountries = make(map[string]uint64)
 	m.fallbacks = make(map[fallbackMetricKey]uint64)
 	m.payloads = make(map[payloadMetricKey]payloadTotals)
 	m.tunnelOpens = make(map[tunnelMetricKey]uint64)
 	m.tunnelDurations = make(map[tunnelMetricKey]*histogramMetric)
+	m.entryFailures = make(map[EntryFailureReason]uint64)
 }
 
 // RequestObservation describes one completed proxy setup attempt.
@@ -115,6 +174,9 @@ type RequestObservation struct {
 	RequestedCountry string
 	Lease            *Lease
 	Duration         time.Duration
+	// TimeoutPhase names where a RequestTimeout was hit. It is ignored for every
+	// other result, so callers on the success path need not set it.
+	TimeoutPhase TimeoutPhase
 }
 
 // ObserveRequest records one bounded request outcome and setup duration.
@@ -133,6 +195,13 @@ func (p *Pool) ObserveRequest(observation RequestObservation) {
 		p.metrics.requestDurations[key] = histogram
 	}
 	histogram.observe(requestDurationBuckets, observation.Duration.Seconds())
+	if observation.Result == RequestTimeout {
+		phase := observation.TimeoutPhase
+		if phase == "" {
+			phase = TimeoutPhaseUnknown
+		}
+		p.metrics.requestTimeouts[timeoutMetricKey{phase: phase, country: country, entry: entry}]++
+	}
 	p.metrics.requestedCountries[requested]++
 	if observation.Lease != nil {
 		p.metrics.selectedCountries[country]++
@@ -154,6 +223,20 @@ func (p *Pool) observeTunnelOpen(role TunnelRole, result TunnelResult, duration 
 		p.metrics.tunnelDurations[key] = histogram
 	}
 	histogram.observe(tunnelDurationBuckets, duration.Seconds())
+}
+
+// observeEntryOpenFailureLocked records that an entry tunnel could not be brought
+// up. The caller already holds p.mu because it is applying that entry's backoff.
+func (p *Pool) observeEntryOpenFailureLocked() {
+	p.metrics.ensure()
+	p.metrics.entryFailures[EntryFailureOpen]++
+}
+
+// observeEntryDialFailureLocked records a failed dial through a live entry. The
+// caller already holds p.mu because it is updating that entry's own state.
+func (p *Pool) observeEntryDialFailureLocked() {
+	p.metrics.ensure()
+	p.metrics.entryFailures[EntryFailureDial]++
 }
 
 func (p *Pool) recordPayloadLocked(lease *Lease, sent, received int64) {

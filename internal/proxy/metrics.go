@@ -16,6 +16,18 @@ func (d *Deps) observeRequest(
 	result pool.RequestResult,
 	duration time.Duration,
 ) {
+	d.observeRequestPhase(pol, lease, result, pool.TimeoutPhaseUnknown, duration)
+}
+
+// observeRequestPhase is observeRequest for the paths that know which side of
+// upstream readiness they are on, so a timeout can be attributed to a phase.
+func (d *Deps) observeRequestPhase(
+	pol policy.Policy,
+	lease *pool.Lease,
+	result pool.RequestResult,
+	phase pool.TimeoutPhase,
+	duration time.Duration,
+) {
 	if d.Pool == nil {
 		return
 	}
@@ -24,6 +36,7 @@ func (d *Deps) observeRequest(
 		RequestedCountry: requestedCountry(pol),
 		Lease:            lease,
 		Duration:         duration,
+		TimeoutPhase:     phase,
 	})
 }
 

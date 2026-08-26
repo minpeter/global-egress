@@ -3,6 +3,7 @@ package pool
 import (
 	"sort"
 	"strconv"
+	"time"
 )
 
 // MetricBucket is one cumulative histogram bucket.
@@ -27,6 +28,28 @@ type RequestDurationMetric struct {
 	Buckets []MetricBucket
 	Sum     float64
 	Count   uint64
+}
+
+// RequestTimeoutMetric is one timeout counter series, split by the phase the
+// request died in and the same bounded country/entry dimensions as the request
+// counters so a phase can be attributed to a path.
+type RequestTimeoutMetric struct {
+	Phase   TimeoutPhase
+	Country string
+	Entry   string
+	Count   uint64
+}
+
+// EntryStateMetric is the number of entry tunnels in one bounded rotation state.
+type EntryStateMetric struct {
+	State EntryHealth
+	Count uint64
+}
+
+// EntryFailureMetric is one entry-failure counter series by bounded reason.
+type EntryFailureMetric struct {
+	Reason EntryFailureReason
+	Count  uint64
 }
 
 // CountryMetric is one country counter series.
@@ -70,12 +93,17 @@ type TunnelDurationMetric struct {
 type MetricsSnapshot struct {
 	Requests           []RequestMetric
 	RequestDurations   []RequestDurationMetric
+	RequestTimeouts    []RequestTimeoutMetric
 	RequestedCountries []CountryMetric
 	SelectedCountries  []CountryMetric
 	CountryFallbacks   []CountryFallbackMetric
 	Payloads           []PayloadMetric
 	TunnelOpens        []TunnelMetric
 	TunnelDurations    []TunnelDurationMetric
+	// EntryStates is always the full open/idle/disabled set, including zeroes, so
+	// a scrape never loses a series just because no entry is in that state.
+	EntryStates   []EntryStateMetric
+	EntryFailures []EntryFailureMetric
 }
 
 // Metrics returns a deterministic process-lifetime metrics snapshot.
@@ -108,6 +136,39 @@ func (p *Pool) Metrics() MetricsSnapshot {
 		return a.Result < b.Result ||
 			a.Result == b.Result && (a.Country < b.Country ||
 				a.Country == b.Country && a.Entry < b.Entry)
+	})
+
+	for key, count := range p.metrics.requestTimeouts {
+		snapshot.RequestTimeouts = append(snapshot.RequestTimeouts, RequestTimeoutMetric{
+			Phase: key.phase, Country: key.country, Entry: key.entry, Count: count,
+		})
+	}
+	sort.Slice(snapshot.RequestTimeouts, func(i, j int) bool {
+		a, b := snapshot.RequestTimeouts[i], snapshot.RequestTimeouts[j]
+		return a.Phase < b.Phase ||
+			a.Phase == b.Phase && (a.Country < b.Country ||
+				a.Country == b.Country && a.Entry < b.Entry)
+	})
+
+	now := time.Now()
+	entryCounts := map[EntryHealth]uint64{
+		EntryHealthOpen: 0, EntryHealthIdle: 0, EntryHealthDisabled: 0,
+	}
+	for _, entry := range p.entries {
+		entryCounts[entry.entryHealthLocked(now)]++
+	}
+	for _, state := range []EntryHealth{EntryHealthOpen, EntryHealthIdle, EntryHealthDisabled} {
+		snapshot.EntryStates = append(snapshot.EntryStates, EntryStateMetric{
+			State: state, Count: entryCounts[state],
+		})
+	}
+	for reason, count := range p.metrics.entryFailures {
+		snapshot.EntryFailures = append(snapshot.EntryFailures, EntryFailureMetric{
+			Reason: reason, Count: count,
+		})
+	}
+	sort.Slice(snapshot.EntryFailures, func(i, j int) bool {
+		return snapshot.EntryFailures[i].Reason < snapshot.EntryFailures[j].Reason
 	})
 
 	snapshot.RequestedCountries = snapshotCountries(p.metrics.requestedCountries)

@@ -94,6 +94,18 @@ type EntryInfo struct {
 	BytesReceived uint64 `json:"bytes_received"`
 }
 
+// entryHealthLocked classifies one entry into a bounded rotation state.
+func (e *entryState) entryHealthLocked(now time.Time) EntryHealth {
+	switch {
+	case now.Before(e.disabledUntil):
+		return EntryHealthDisabled
+	case e.isOpen():
+		return EntryHealthOpen
+	default:
+		return EntryHealthIdle
+	}
+}
+
 // Entries returns a snapshot of the entry tunnels and what has been learned about
 // them.
 func (p *Pool) Entries() []EntryInfo {
@@ -210,6 +222,7 @@ func (p *Pool) noteEntryFailure(entryID string, err error) bool {
 
 	entry.failures++
 	entry.lastError = redactedError(err)
+	p.observeEntryDialFailureLocked()
 	if entry.failures < entryFailureThreshold {
 		return false
 	}
@@ -297,6 +310,7 @@ func (p *Pool) ensureEntryOpen(ctx context.Context, entry *entryState) (*wgtunne
 		} else {
 			entry.failures++
 			entry.lastError = redactedError(err)
+			p.observeEntryOpenFailureLocked()
 			backoff := p.opts.FailureBackoff << min(entry.failures-1, 5)
 			if maxBackoff := 10 * time.Minute; backoff > maxBackoff {
 				backoff = maxBackoff
