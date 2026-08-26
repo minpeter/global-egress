@@ -12,6 +12,41 @@ CONTROL="${CONTROL:-http://127.0.0.1:8080}"
 OUT_DIR="${OUT_DIR:-/var/lib/node_exporter/textfile_collector}"
 OUT="$OUT_DIR/global_egress.prom"
 INTERVAL="${INTERVAL:-60}"
+CONTROL_TOKEN_FILE="${CONTROL_TOKEN_FILE:-}"
+AUTH_CONFIG=
+
+cleanup() {
+  [ -z "$AUTH_CONFIG" ] || rm -f "$AUTH_CONFIG"
+}
+trap cleanup EXIT HUP INT TERM
+
+if [ -n "$CONTROL_TOKEN_FILE" ]; then
+  [ -r "$CONTROL_TOKEN_FILE" ] || {
+    echo "control token file is not readable" >&2
+    exit 1
+  }
+  token=$(tr -d '\r\n' < "$CONTROL_TOKEN_FILE")
+  case "$token" in
+    ""|*[!A-Za-z0-9._~-]*)
+      echo "control token file contains an invalid token" >&2
+      exit 1
+      ;;
+  esac
+  old_umask=$(umask)
+  umask 077
+  AUTH_CONFIG=$(mktemp "${TMPDIR:-/tmp}/global-egress-collector-curl.XXXXXX")
+  umask "$old_umask"
+  printf 'header = "Authorization: Bearer %s"\n' "$token" > "$AUTH_CONFIG"
+  unset token
+fi
+
+control_get() {
+  if [ -n "$AUTH_CONFIG" ]; then
+    curl --config "$AUTH_CONFIG" "$@"
+  else
+    curl "$@"
+  fi
+}
 
 mkdir -p "$OUT_DIR"
 chmod 755 "$OUT_DIR"
@@ -19,7 +54,7 @@ chmod 755 "$OUT_DIR"
 emit() {
   tmp="$OUT.$$"
   {
-    stats=$(curl -sS --max-time 8 "$CONTROL/v1/stats" 2>/dev/null)
+    stats=$(control_get -fsS --max-time 8 "$CONTROL/v1/stats" 2>/dev/null)
     echo '# HELP global_egress_up Control API reachable.'
     echo '# TYPE global_egress_up gauge'
     if [ -z "$stats" ]; then
@@ -42,7 +77,7 @@ emit() {
 
     echo '# HELP global_egress_country_acquisitions_total Successful exit selections by country.'
     echo '# TYPE global_egress_country_acquisitions_total counter'
-    curl -fsS --max-time 8 "$CONTROL/v1/country-acquisitions" 2>/dev/null | awk '
+    control_get -fsS --max-time 8 "$CONTROL/v1/country-acquisitions" 2>/dev/null | awk '
       /"country":/ {
         country = $0
         sub(/.*"country": *"/, "", country)
@@ -55,7 +90,7 @@ emit() {
         country = ""
       }'
 
-    if extended_metrics=$(curl -fsS --max-time 8 "$CONTROL/v1/metrics" 2>/dev/null); then
+    if extended_metrics=$(control_get -fsS --max-time 8 "$CONTROL/v1/metrics" 2>/dev/null); then
       printf '%s\n' "$extended_metrics"
     else
       echo '# global-egress extended metrics unavailable'
@@ -73,7 +108,7 @@ emit() {
     # Emit when an entry object closes, tracked by brace depth. Keying off a field
     # name breaks as soon as the API reorders its JSON, and matching a bare closing
     # brace fires early on the nested latency object.
-    curl -sS --max-time 8 "$CONTROL/v1/entries" 2>/dev/null | awk '
+    control_get -fsS --max-time 8 "$CONTROL/v1/entries" 2>/dev/null | awk '
       {
         before = depth
         n = gsub(/\{/, "{"); depth += n

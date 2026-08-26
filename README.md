@@ -490,9 +490,17 @@ The service speaks JSON, so a small collector translates `/v1/stats` and
 
 ```sh
 install -m 0755 deploy/collector/global-egress-collector /usr/local/bin/
+install -m 0644 deploy/collector/global-egress-metrics.openrc /etc/init.d/global-egress-metrics
+install -m 0600 deploy/collector/global-egress-metrics.confd /etc/conf.d/global-egress-metrics
 install -m 0644 deploy/grafana/global-egress.json \
   /opt/monitoring/grafana/dashboards/global-egress.json
 ```
+
+When `access.control_token_file` is configured, set `CONTROL_TOKEN_FILE` in
+`/etc/conf.d/global-egress-metrics` to the same protected file. The collector
+passes that bearer through a mode-0600 temporary curl config, so the token never
+appears in process arguments, logs, or Prometheus output. Leave the variable
+empty for a tokenless control API.
 
 The shipped dashboard (**UID `global-egress`**, 12 panels) covers entry tunnel state,
 request and failure rates, exit inventory coverage, sticky sessions and unique

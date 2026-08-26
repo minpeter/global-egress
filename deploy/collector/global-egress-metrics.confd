@@ -3,3 +3,6 @@
 # Where the collector reaches the control API. It must match listen.control in the
 # service config, which binds to the service's own address rather than loopback.
 CONTROL="http://10.0.0.30:8080"
+
+# Optional Bearer credential for authenticated control GETs.
+CONTROL_TOKEN_FILE="/etc/global-egress/control-token"

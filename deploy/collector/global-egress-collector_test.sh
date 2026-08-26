@@ -3,7 +3,8 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+PIDS=
+trap 'kill $PIDS 2>/dev/null || true; rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/api/v1" "$TMP/metrics"
 printf '%s\n' '{
@@ -92,7 +93,7 @@ with open(port_file, "w", encoding="utf-8") as output:
 server.serve_forever()
 PY
 SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+PIDS="$SERVER_PID"
 read -r SERVER_PORT <"$TMP/server-port"
 mkdir "$TMP/error-metrics"
 CONTROL="http://127.0.0.1:$SERVER_PORT" OUT_DIR="$TMP/error-metrics" \
@@ -174,3 +175,142 @@ jq -e '
   and (.panels[] | select(.id == 10) | .title == "CPU usage")
   and (.panels[] | select(.id == 11) | .title == "Network I/O")
 ' "$ROOT/deploy/grafana/global-egress.json"
+
+# Record curl argv so a bearer token cannot hide on the command line.
+mkdir -p "$TMP/bin"
+export REAL_CURL
+REAL_CURL=$(command -v curl)
+cat >"$TMP/bin/curl" <<'WRAP'
+#!/bin/sh
+{
+  printf 'argc=%s\n' "$#"
+  i=1
+  for arg in "$@"; do
+    printf 'arg%d=%s\n' "$i" "$arg"
+    i=$((i + 1))
+  done
+} >>"$CURL_ARGV_LOG"
+exec "$REAL_CURL" "$@"
+WRAP
+chmod 0755 "$TMP/bin/curl"
+
+start_control_stub() {
+  require_token=$1
+  log=$2
+  ready=$3
+  mkfifo "$ready"
+  python3 - "$require_token" "$log" "$ready" <<'PY' &
+import http.server
+import sys
+
+require_token, log_path, ready = sys.argv[1], sys.argv[2], sys.argv[3]
+
+FIXTURES = {
+    "/v1/stats": b'{"slots": 1}\n',
+    "/v1/entries": b'{"count": 0, "entries": []}\n',
+    "/v1/country-acquisitions": b'{"countries": []}\n',
+    "/v1/metrics": (
+        b"# TYPE global_egress_request_results_total counter\n"
+        b'global_egress_request_results_total{result="success",country="jp",entry="entry-jp"} 1\n'
+    ),
+}
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        auth = self.headers.get("Authorization") or ""
+        with open(log_path, "a", encoding="utf-8") as output:
+            output.write(f"{self.path}\t{auth}\n")
+        if require_token and auth != f"Bearer {require_token}":
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="global-egress"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = FIXTURES.get(self.path, b'{"ok":true}\n')
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+with open(ready, "w", encoding="utf-8") as output:
+    output.write(f"{server.server_port}\n")
+server.serve_forever()
+PY
+  STUB_PID=$!
+  PIDS="$PIDS $STUB_PID"
+  read -r STUB_PORT <"$ready"
+}
+
+assert_paths() {
+  log=$1
+  want_auth=$2
+  for path in /v1/stats /v1/country-acquisitions /v1/metrics /v1/entries; do
+    grep -Fqx "$path	$want_auth" "$log" || {
+      echo "missing control request $path with expected Authorization" >&2
+      echo "recorded:" >&2
+      cat "$log" >&2
+      exit 1
+    }
+  done
+  extra=$(awk -F '\t' -v want="$want_auth" '$2 != want { print }' "$log" || true)
+  if [ -n "$extra" ]; then
+    echo "control request with unexpected Authorization:" >&2
+    printf '%s\n' "$extra" >&2
+    exit 1
+  fi
+}
+
+assert_no_token_leak() {
+  token=$1
+  shift
+  for path in "$@"; do
+    if grep -Fq "$token" "$path"; then
+      echo "token leaked into $path" >&2
+      exit 1
+    fi
+  done
+}
+
+TOKEN=g2-collector-token-ulw
+printf '%s\n' "$TOKEN" >"$TMP/control-token"
+chmod 0600 "$TMP/control-token"
+
+# Unset token: legacy collector must not send Authorization on any control GET.
+: >"$TMP/unauth-log"
+start_control_stub "" "$TMP/unauth-log" "$TMP/unauth-port"
+UNAUTH_PID=$STUB_PID
+UNAUTH_PORT=$STUB_PORT
+mkdir "$TMP/unauth-metrics"
+: >"$TMP/unauth-argv"
+CURL_ARGV_LOG="$TMP/unauth-argv" PATH="$TMP/bin:$PATH" CONTROL="http://127.0.0.1:$UNAUTH_PORT" \
+  OUT_DIR="$TMP/unauth-metrics" env -u CONTROL_TOKEN_FILE -u CONTROL_TOKEN \
+  sh "$ROOT/deploy/collector/global-egress-collector" once
+kill "$UNAUTH_PID" 2>/dev/null || true
+grep -Fx 'global_egress_up 1' "$TMP/unauth-metrics/global_egress.prom"
+assert_paths "$TMP/unauth-log" ""
+if grep -Fi 'authorization' "$TMP/unauth-argv"; then
+  echo "Authorization header sent while token was unset" >&2
+  exit 1
+fi
+
+# Configured token file: every control GET must carry Bearer, never argv/metrics.
+: >"$TMP/auth-log"
+start_control_stub "$TOKEN" "$TMP/auth-log" "$TMP/auth-port"
+AUTH_PID=$STUB_PID
+AUTH_PORT=$STUB_PORT
+mkdir "$TMP/auth-metrics"
+: >"$TMP/auth-argv"
+CURL_ARGV_LOG="$TMP/auth-argv" PATH="$TMP/bin:$PATH" CONTROL="http://127.0.0.1:$AUTH_PORT" \
+  OUT_DIR="$TMP/auth-metrics" CONTROL_TOKEN_FILE="$TMP/control-token" \
+  env -u CONTROL_TOKEN sh "$ROOT/deploy/collector/global-egress-collector" once
+kill "$AUTH_PID" 2>/dev/null || true
+grep -Fx 'global_egress_up 1' "$TMP/auth-metrics/global_egress.prom"
+assert_paths "$TMP/auth-log" "Bearer $TOKEN"
+assert_no_token_leak "$TOKEN" \
+  "$TMP/auth-metrics/global_egress.prom" \
+  "$TMP/auth-argv"
