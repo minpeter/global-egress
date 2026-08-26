@@ -466,7 +466,7 @@ measurements behind the design.
 
 ## Requirements
 
-- Go 1.25.12 or newer (the minor version comes from `golang.org/x/net` and
+- Go 1.25.13 or newer (the minor version comes from `golang.org/x/net` and
   `golang.org/x/crypto`; the patch version from reachable stdlib vulnerabilities in
   earlier 1.25 releases)
 - Linux for deployment; the code also compiles for darwin/arm64
