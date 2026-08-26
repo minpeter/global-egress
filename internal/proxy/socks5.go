@@ -116,7 +116,8 @@ func (s *SOCKS5Server) handle(ctx context.Context, client net.Conn) {
 	started := time.Now()
 	upstream, lease, err := s.deps.connectUpstream(ctx, pol, host, port)
 	if err != nil {
-		s.deps.observeRequest(pol, lease, requestResult(err), time.Since(started))
+		s.deps.observeRequestPhase(
+			pol, lease, requestResult(err), pool.TimeoutPhaseAcquire, time.Since(started))
 		log.Warn("connect failed",
 			policyLogAttr(pol),
 			errorTypeAttr(err))

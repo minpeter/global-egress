@@ -3,7 +3,7 @@
 # Multi-stage build: static binary into a distroless image.
 # Userspace WireGuard needs no /dev/net/tun, NET_ADMIN, or root.
 
-ARG GO_VERSION=1.25.12
+ARG GO_VERSION=1.25.13
 
 FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src

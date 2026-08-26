@@ -12,6 +12,8 @@ allowed_clients = ["172.16.0.0/12"]
 password_file = "/etc/global-egress/proxy-password"
 require_auth = true
 require_policy = true
+# Required for mutating control requests from outside the container.
+control_token_file = "/etc/global-egress/control-token"
 
 [[providers]]
 id = "mullvad"

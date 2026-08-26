@@ -106,8 +106,21 @@ Merging beats replacing. A sweep and a running service each know things the othe
 does not: the sweep is broader, while the service has learned exits that happened to
 fail during the sweep.
 
-Measured on a 532-exit Mullvad bundle: **529 exits, 529 distinct addresses, zero
-duplicates**. The catalogue really does give one address per exit.
+Measured in place on 2026-07-28, relay-socks mode, 532-slot Mullvad bundle (device
+"Fast Pike"): **529 exits, 529 distinct addresses, zero duplicates**. The
+catalogue really does give one address per exit.
+
+That 529 is one row in the log in
+[docs/capacity.md](capacity.md#exit-ip-measurement-log), not a property of the
+software. A single sweep of the same bundle at concurrency 10 measured 524, and a
+wireguard-mode sweep measured 456, because a measurement reflects the mode, the
+concurrency and the day it ran. Record the same metadata for your own sweeps: date,
+mode, bundle size and device, concurrency and pacing.
+
+For what is true right now rather than on some past date, read the service instead
+of a document: `slots`, `slots_with_known_ip` and `unique_public_ips` in
+`/v1/stats`, and the address list in `/v1/ips`. Slot count and measured IP count
+are separate fields on purpose, and `uniq=` only ever draws on the measured ones.
 
 ## Watching it
 

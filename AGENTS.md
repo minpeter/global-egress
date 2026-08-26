@@ -131,7 +131,7 @@ darwin/arm64), `vulncheck`.
 
 ## NOTES
 
-- Go floor is **1.25.12** and both parts are forced: minor by `golang.org/x/net`
+- Go floor is **1.25.13** and both parts are forced: minor by `golang.org/x/net`
   and `x/crypto`, patch by reachable stdlib vulnerabilities. `vulncheck` runs
   against the `go.mod` toolchain on purpose.
 - Directives ride in the proxy username, so a client must send a non-empty
