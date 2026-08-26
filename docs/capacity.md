@@ -1,7 +1,38 @@
 # Capacity
 
-Measured on 2026-07-28 with a 532-slot Mullvad bundle, Go 1.26, Linux, one
+Every number here comes from a specific run: a date, one provider bundle, one
+mode, one host. Unless a line says otherwise, it was measured on 2026-07-28 with
+a 532-slot Mullvad bundle (device "Fast Pike"), Go 1.26, Linux, one
 `global-egress` process.
+
+Nothing in this file is a constant the code reads, and none of it describes your
+bundle. Slot count is what the catalogue contains; measured IP count is what a
+sweep proved. They are different numbers, and the second one changes as relays
+come and go. For the values that are true right now, ask the running service:
+`GET /v1/stats` (`slots`, `slots_with_known_ip`, `unique_public_ips`) and
+`GET /v1/ips`.
+
+## Exit-IP measurement log
+
+Three measurements of the same 532-slot bundle, kept separate on purpose. They are
+different runs, not competing versions of one truth, and the spread between them
+is the point: what a measurement sees depends on the mode, the concurrency and the
+day.
+
+| Date | Mode | Bundle / device | Measurement | Measured | Unique IPs | Duplicates |
+|---|---|---|---|---:|---:|---:|
+| 2026-07-28 | `relay-socks` | 532 slots, "Fast Pike" | sweep at concurrency 10, plus a retry of the failures at 4 | 524 / 532 | 524 | 0 |
+| 2026-07-28 | `relay-socks` | 532 slots, "Fast Pike" | in-place inventory recorded in [operations.md](operations.md) | 529 / 532 | 529 | 0 |
+| 2026-07-28 | `wireguard` | 532 slots, "Fast Pike" | unpaced sweep at concurrency 8, key blocked part-way | 456 / 532 | 456 | 0 |
+
+What holds across all three: **one measured address per reachable exit, zero
+sharing.** What does not hold: the total. Quote a total only with the row it came
+from.
+
+When you record a new row, note the date, the mode, the bundle size and device,
+the concurrency and pacing, and whether the figure comes from one sweep or from an
+inventory that has accumulated across runs. A count without that metadata cannot
+be compared against anything.
 
 ## relay-socks mode, measured
 
@@ -11,11 +42,11 @@ measuring host in Korea that was itself behind a tunnel, so treat them as shape
 rather than as absolute values.
 
 ```text
-exits available            532   (relays that are active and expose a proxy)
+slots in the catalogue     532   (relays that are active and expose a proxy)
 entry tunnels              3     (Tokyo, Singapore, Los Angeles)
 WireGuard associations     3     total, long-lived
 startup                    304ms to bring all three entries up
-resident memory            20.4 MiB for the whole 532-exit catalog
+resident memory            20.4 MiB for the whole 532-slot catalog
 ```
 
 Rotation throughput, each request landing on a different exit IP:
@@ -26,7 +57,7 @@ concurrency 20: 60/60 distinct IPs, 7.5s ->  8.0 IPs/s
 concurrency 40: 60/60 distinct IPs, 4.2s -> 14.3 IPs/s
 ```
 
-At concurrency 40 the entire 532-exit catalog can be cycled in roughly 37
+At concurrency 40 the entire 532-slot catalog can be cycled in roughly 37
 seconds, with zero errors and no new key associations. Country selection was
 correct for every country tested (jp, de, us, br, au, se, za), and sticky sessions
 returned the same address on every request.
@@ -91,7 +122,7 @@ Set `LimitNOFILE` generously; the shipped systemd unit uses 65535.
 - 30 tunnels pre-opened concurrently: ~300 ms wall clock
 - 6 slots probed with concurrency 3: 5 s total
 
-## Definitive exit-IP inventory (relay-socks, measured in place)
+## 2026-07-28, relay-socks, measured in place
 
 Run from the deployment guest over three shared entry tunnels, so the whole sweep
 cost three key associations rather than one per exit:
@@ -109,21 +140,24 @@ countries         50
 distinct /16      92
 ```
 
-**524 distinct exit addresses, no sharing whatsoever.** That is the real ceiling for
-`uniq=` batches on this bundle.
+**524 distinct exit addresses, no sharing whatsoever.** That was the ceiling for
+`uniq=` batches on this bundle on that day. The in-place inventory in
+[operations.md](operations.md) reached 529 on the same catalogue, so read 524 as a
+floor with a date attached, not as the bundle's permanent size.
 
 The 77 first-pass failures were concentrated in Europe (de 13/21, nl 10/17, ch 8/11,
 gb 9/23) and 69 of them succeeded on a retry at lower concurrency, so they were
 contention on the European entry rather than dead exits. Sweep at concurrency 4-6 if
 a single clean pass matters.
 
-Contrast with wireguard mode below: the same catalogue measured 456 exits, needed
-456 key associations, and got the device key blocked for hours.
+Contrast with the wireguard-mode run below: the same catalogue measured 456 exits,
+needed 456 key associations, and got the device key blocked for hours. Same
+bundle, same day, different mode, 68 fewer addresses.
 
-## How many unique exit IPs a bundle really provides
+## 2026-07-28, wireguard, unpaced sweep
 
-Measured against a 532-slot Mullvad bundle (device "Fast Pike"), sweeping the
-whole catalog at `-concurrency 8` with no pacing:
+Same 532-slot Mullvad bundle and the same device key, this time opening one tunnel
+per slot at `-concurrency 8` with no pacing:
 
 ```text
 probed          532 slots in 3m44s
@@ -137,9 +171,10 @@ distinct /24s   227
 Two results matter here.
 
 **There is no IP sharing.** Every reachable slot exited from its own address:
-456 slots, 456 distinct IPs, ratio 1.00. The common assumption that a provider
-multiplexes many servers behind one exit address did not hold for this bundle, so
-`uniq=` batches can be as large as the number of *reachable* slots.
+456 slots, 456 distinct IPs, ratio 1.00, matching the relay-socks runs. The
+common assumption that a provider multiplexes many servers behind one exit
+address did not hold for this bundle, so `uniq=` batches can be as large as the
+number of *reachable* slots.
 
 **The 76 failures were self-inflicted, not dead servers.** Cross-checking every
 slot against Mullvad's live relay list (`api.mullvad.net/www/relays/wireguard/`)
@@ -187,10 +222,11 @@ than waiting.
 
 ### Consequences
 
-- The practical ceiling for this bundle is **at least 456 and plausibly all 532**
-  distinct exit IPs. The remaining 76 stayed unverified: by the time they could be
-  retried, the key was already blocked, so their status is unknown rather than
-  bad.
+- This run alone proves 456 distinct exit IPs. Read together with the relay-socks
+  rows in the log above, the practical ceiling for this bundle is **at least 529
+  and plausibly all 532**. The 76 slots that failed here stayed unverified in this
+  mode: by the time they could be retried, the key was already blocked, so their
+  status is unknown rather than bad.
 - Verify a large catalog in small paced batches spread over hours, and stop at the
   first sign of rising failures instead of pushing through them.
 - Sweep large catalogs with `-interval` (e.g. `-interval 2s -concurrency 2`),
@@ -215,6 +251,7 @@ Start with `max_active: 25`, watch RSS and the `open_tunnels` gauge in
   This is a trade for isolation and zero host configuration.
 - CPU scales with traffic, not with idle tunnel count. Idle tunnels only send a
   keepalive every 25 s.
-- The number of slots is an upper bound on distinct exit IPs. Run
+- The number of slots is an upper bound on distinct exit IPs, never a substitute
+  for one. Run
   `global-egress probe` to measure the real number before promising `uniq=`
   batches of a given size.
