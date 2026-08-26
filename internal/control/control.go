@@ -124,6 +124,9 @@ func (s *Server) checkClient(remoteAddr string) error {
 }
 
 func (s *Server) tokenOK(r *http.Request) bool {
+	if s.opts.Token == "" {
+		return false
+	}
 	header := r.Header.Get("Authorization")
 	scheme, value, found := strings.Cut(header, " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") {

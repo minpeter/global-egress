@@ -362,6 +362,15 @@ func TestBearerToken(t *testing.T) {
 	}
 }
 
+func TestBearerTokenRejectsEmptyConfiguredToken(t *testing.T) {
+	server, _ := newTestServer(t, Options{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/report", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	if server.tokenOK(req) {
+		t.Fatal("empty configured token accepted an empty bearer value")
+	}
+}
+
 func TestNonLoopbackReadOnlyEndpointsRemainOpenWithoutToken(t *testing.T) {
 	server, _ := newTestServer(t, Options{})
 	for _, path := range []string{"/healthz", "/v1/stats", "/v1/metrics"} {
