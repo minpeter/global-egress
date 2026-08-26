@@ -1,3 +1,9 @@
+## github.com/minpeter/global-egress@0.0.3
+
+### Export the collector control token path
+
+Pass `CONTROL_TOKEN_FILE` from the OpenRC confd into the metrics collector process so authenticated control scraping works after restart.
+
 ## github.com/minpeter/global-egress@0.0.2
 
 ### Fail closed for remote control mutations
