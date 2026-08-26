@@ -1,6 +1,6 @@
 module github.com/minpeter/global-egress
 
-go 1.25.12
+go 1.25.13
 
 require golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 
