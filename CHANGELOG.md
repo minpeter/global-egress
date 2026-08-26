@@ -1,3 +1,9 @@
+## github.com/minpeter/global-egress@0.0.6
+
+### Keep Docker configuration private and readable
+
+Include `config.toml` in the uid 65532 ownership and mode `0600` handoff so the nonroot container can read configuration created under the restrictive umask.
+
 ## github.com/minpeter/global-egress@0.0.5
 
 ### Create Docker secrets privately from the first write

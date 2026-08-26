@@ -1,11 +1,11 @@
 core:changelogs:
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Create Docker secrets privately from the first write\n\nSet a restrictive umask before creating Docker secrets and create the provider catalog at mode `0700` before placing key material in it, closing the exposure window before the final ownership and permission hardening commands run.\n"
-    filename: 2026-08-27-docker-secret-creation-order.md
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Keep Docker configuration private and readable\n\nInclude `config.toml` in the uid 65532 ownership and mode `0600` handoff so the nonroot container can read configuration created under the restrictive umask.\n"
+    filename: 2026-08-27-docker-config-permissions.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-08-27-docker-secret-creation-order.md
+      - 2026-08-27-docker-config-permissions.md
     id: go:github.com/minpeter/global-egress
     updated: true
 go-root:version:
-  - version: 0.0.5
+  - version: 0.0.6
