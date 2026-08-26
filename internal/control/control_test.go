@@ -183,6 +183,35 @@ func TestMetricsExposition(t *testing.T) {
 	}
 }
 
+func TestMetricsExposesTimeoutPhaseAndEntryHealth(t *testing.T) {
+	server, egressPool := newTestServer(t, Options{})
+	egressPool.ObserveRequest(pool.RequestObservation{
+		Result:           pool.RequestTimeout,
+		TimeoutPhase:     pool.TimeoutPhaseAcquire,
+		RequestedCountry: "jp",
+		Duration:         2 * time.Second,
+	})
+
+	rec := do(t, server, http.MethodGet, "/v1/metrics", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE global_egress_request_timeouts_total counter",
+		`global_egress_request_timeouts_total{phase="acquire",country="unknown",entry="none"} 1`,
+		"# TYPE global_egress_entry_state gauge",
+		`global_egress_entry_state{state="open"} 0`,
+		`global_egress_entry_state{state="idle"} 0`,
+		`global_egress_entry_state{state="disabled"} 0`,
+		"# TYPE global_egress_entry_failures_total counter",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestWhoamiRequiresSession(t *testing.T) {
 	server, _ := newTestServer(t, Options{})
 

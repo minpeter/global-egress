@@ -122,7 +122,8 @@ func (s *HTTPServer) handleConnect(w http.ResponseWriter, r *http.Request, pol p
 	started := time.Now()
 	upstream, lease, err := s.deps.connectUpstream(r.Context(), pol, host, port)
 	if err != nil {
-		s.deps.observeRequest(pol, lease, requestResult(err), time.Since(started))
+		s.deps.observeRequestPhase(
+			pol, lease, requestResult(err), pool.TimeoutPhaseAcquire, time.Since(started))
 		log.Warn("connect failed",
 			policyLogAttr(pol),
 			errorTypeAttr(err))
@@ -219,7 +220,8 @@ func (s *HTTPServer) handleForward(w http.ResponseWriter, r *http.Request, pol p
 	started := time.Now()
 	lease, err := s.deps.Pool.Acquire(r.Context(), pol, host)
 	if err != nil {
-		s.deps.observeRequest(pol, nil, requestResult(err), time.Since(started))
+		s.deps.observeRequestPhase(
+			pol, nil, requestResult(err), pool.TimeoutPhaseAcquire, time.Since(started))
 		log.Warn("acquire failed", policyLogAttr(pol), errorTypeAttr(err))
 		http.Error(w, "egress unavailable", statusCodeFor(err))
 		return
@@ -263,7 +265,8 @@ func (s *HTTPServer) handleForward(w http.ResponseWriter, r *http.Request, pol p
 
 	resp, err := transport.RoundTrip(outbound)
 	if err != nil {
-		s.deps.observeRequest(pol, lease, upstreamResult(err), time.Since(started))
+		s.deps.observeRequestPhase(
+			pol, lease, upstreamResult(err), pool.TimeoutPhaseUpstream, time.Since(started))
 		log.Warn("upstream request failed",
 			slog.String("slot", lease.Slot.ID),
 			errorTypeAttr(err))

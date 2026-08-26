@@ -46,6 +46,37 @@ func writeMetrics(w http.ResponseWriter, snapshot pool.MetricsSnapshot) {
 	}
 
 	writeMetricHeader(w,
+		"global_egress_request_timeouts_total",
+		"counter",
+		"Timed-out proxy requests by phase, selected country, and entry.",
+	)
+	for _, metric := range snapshot.RequestTimeouts {
+		fmt.Fprintf(w,
+			"global_egress_request_timeouts_total{phase=%s,country=%s,entry=%s} %d\n",
+			label(string(metric.Phase)), label(metric.Country), label(metric.Entry), metric.Count)
+	}
+
+	writeMetricHeader(w,
+		"global_egress_entry_state",
+		"gauge",
+		"Entry tunnels currently in each rotation state.",
+	)
+	for _, metric := range snapshot.EntryStates {
+		fmt.Fprintf(w, "global_egress_entry_state{state=%s} %d\n",
+			label(string(metric.State)), metric.Count)
+	}
+
+	writeMetricHeader(w,
+		"global_egress_entry_failures_total",
+		"counter",
+		"Entry tunnel failures by reason.",
+	)
+	for _, metric := range snapshot.EntryFailures {
+		fmt.Fprintf(w, "global_egress_entry_failures_total{reason=%s} %d\n",
+			label(string(metric.Reason)), metric.Count)
+	}
+
+	writeMetricHeader(w,
 		"global_egress_requested_country_total",
 		"counter",
 		"Proxy requests by requested country policy.",
