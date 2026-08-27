@@ -1,11 +1,11 @@
 core:changelogs:
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Keep Docker configuration private and readable\n\nInclude `config.toml` in the uid 65532 ownership and mode `0600` handoff so the nonroot container can read configuration created under the restrictive umask.\n"
-    filename: 2026-08-27-docker-config-permissions.md
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Distinguish proxy acquisition timeouts\n\nReturn HTTP 504 when proxy acquisition ends on a context deadline. Pool\nexhaustion and unknown failures remain HTTP 502, so clients can rotate stalled\nexits without broadening retries for ordinary upstream failures.\n"
+    filename: 2026-08-27-connect-deadline-status.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-08-27-docker-config-permissions.md
+      - 2026-08-27-connect-deadline-status.md
     id: go:github.com/minpeter/global-egress
     updated: true
 go-root:version:
-  - version: 0.0.6
+  - version: 0.0.7
