@@ -468,6 +468,8 @@ func statusCodeFor(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, pool.ErrExhausted):
 		return http.StatusBadGateway
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout
 	default:
 		return http.StatusBadGateway
 	}

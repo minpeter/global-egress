@@ -210,7 +210,10 @@ func TestStatusCodeFor(t *testing.T) {
 		pool.ErrPolicy:      http.StatusBadRequest,
 		pool.ErrCapacity:    http.StatusServiceUnavailable,
 		pool.ErrExhausted:   http.StatusBadGateway,
-		errors.New("other"): http.StatusBadGateway,
+		fmt.Errorf("%w: %w", pool.ErrExhausted, context.DeadlineExceeded): http.StatusBadGateway,
+		context.DeadlineExceeded:                            http.StatusGatewayTimeout,
+		fmt.Errorf("acquire: %w", context.DeadlineExceeded): http.StatusGatewayTimeout,
+		errors.New("other"):                                 http.StatusBadGateway,
 	}
 	for err, want := range cases {
 		if got := statusCodeFor(err); got != want {
