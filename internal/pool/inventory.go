@@ -239,7 +239,7 @@ func (p *Pool) setPublicIPLocked(state *slotState, ip netip.Addr, checkedAt time
 			continue
 		}
 		if _, reserved := b.usedSlots[state.spec.ID]; reserved {
-			b.addIP(state.spec.ID, ip)
+			b.addIP(state.spec.ID, ip, now)
 		}
 	}
 	return changed

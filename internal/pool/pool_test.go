@@ -1122,7 +1122,7 @@ func TestExpireLockedDropsStaleEntries(t *testing.T) {
 
 	p.mu.Lock()
 	p.sessions["old"] = &session{slotID: "jp-tyo-wg-001", expiresAt: past}
-	p.batches["old"] = &batch{usedIPs: map[netip.Addr]struct{}{}, usedSlots: map[string]struct{}{}, expiresAt: past}
+	p.batches["old"] = &batch{usedIPs: map[netip.Addr]time.Time{}, usedSlots: map[string]struct{}{}, expiresAt: past}
 	p.slots["jp-tyo-wg-001"].cooldowns["example.com"] = past
 	p.expireLocked(time.Now())
 	sessions, batches, cooldowns := len(p.sessions), len(p.batches), len(p.slots["jp-tyo-wg-001"].cooldowns)

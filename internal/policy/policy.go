@@ -61,6 +61,12 @@ type Policy struct {
 	// BatchTTL overrides the configured unique-batch lifetime. Zero uses the
 	// server default.
 	BatchTTL time.Duration
+	// RecycleBatch lets an exhausted unique batch reuse the exit it burned
+	// longest ago instead of failing. It keeps a long BatchTTL useful for a busy
+	// caller: the batch stays a strict exclusion set until the pool runs dry,
+	// then degrades into a ring ordered by burn age. Off by default, because
+	// uniq= otherwise promises never to repeat an address within a batch.
+	RecycleBatch bool
 	// HealthScope selects the destination/model-specific health history used
 	// for this request. It is an opaque, non-secret token shared with feedback.
 	HealthScope string
@@ -215,6 +221,12 @@ func Parse(username string) (Policy, error) {
 			p.TTL = ttl
 		case "uniq", "unique":
 			p.UniqueBatch = value
+		case "brecycle":
+			enabled, err := parseBool(value)
+			if err != nil {
+				return Policy{}, err
+			}
+			p.RecycleBatch = enabled
 		case "bttl":
 			ttl, err := parseTTL("bttl", value)
 			if err != nil {

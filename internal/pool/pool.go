@@ -270,7 +270,13 @@ type preferredSet struct {
 }
 
 type batch struct {
-	usedIPs   map[netip.Addr]struct{}
+	// usedIPs maps a burned address to when it was burned, so an exhausted
+	// batch can recycle the oldest entry first.
+	usedIPs map[netip.Addr]time.Time
+	// burnSeq breaks ties: two burns inside the same clock tick are common, and
+	// recycling has to advance deterministically rather than pick arbitrarily.
+	burnSeq   map[netip.Addr]uint64
+	nextBurn  uint64
 	usedSlots map[string]struct{}
 	// slotIPs retains the addresses attributed to each reservation so a failed
 	// dial can release only its own addresses after a measurement backfill.
@@ -297,27 +303,28 @@ func redactedError(err error) string {
 
 func newBatch(expiresAt time.Time) *batch {
 	return &batch{
-		usedIPs:   make(map[netip.Addr]struct{}),
+		usedIPs:   make(map[netip.Addr]time.Time),
+		burnSeq:   make(map[netip.Addr]uint64),
 		usedSlots: make(map[string]struct{}),
 		slotIPs:   make(map[string]map[netip.Addr]struct{}),
 		expiresAt: expiresAt,
 	}
 }
 
-func (b *batch) reserve(slotID string, ip netip.Addr) {
+func (b *batch) reserve(slotID string, ip netip.Addr, at time.Time) {
 	if b.usedSlots == nil {
 		b.usedSlots = make(map[string]struct{})
 	}
 	b.usedSlots[slotID] = struct{}{}
-	b.addIP(slotID, ip)
+	b.addIP(slotID, ip, at)
 }
 
-func (b *batch) addIP(slotID string, ip netip.Addr) {
+func (b *batch) addIP(slotID string, ip netip.Addr, at time.Time) {
 	if !ip.IsValid() {
 		return
 	}
 	if b.usedIPs == nil {
-		b.usedIPs = make(map[netip.Addr]struct{})
+		b.usedIPs = make(map[netip.Addr]time.Time)
 	}
 	if b.slotIPs == nil {
 		b.slotIPs = make(map[string]map[netip.Addr]struct{})
@@ -331,7 +338,17 @@ func (b *batch) addIP(slotID string, ip netip.Addr) {
 		return
 	}
 	ips[ip] = struct{}{}
-	b.usedIPs[ip] = struct{}{}
+	b.stampLocked(ip, at)
+}
+
+// stampLocked records a burn and moves the address to the back of the ring.
+func (b *batch) stampLocked(ip netip.Addr, at time.Time) {
+	if b.burnSeq == nil {
+		b.burnSeq = make(map[netip.Addr]uint64)
+	}
+	b.usedIPs[ip] = at
+	b.nextBurn++
+	b.burnSeq[ip] = b.nextBurn
 }
 
 func (b *batch) release(slotID string) {
@@ -680,6 +697,17 @@ func (p *Pool) pick(
 		}
 	}
 	if len(candidates) == 0 {
+		// A batch that has consumed the pool would otherwise fail for the rest of
+		// its TTL. When the caller opted in, fall back to the exit burned longest
+		// ago: it is the one most likely to have recovered whatever per-IP limit
+		// burned it, and re-stamping keeps the reuse order fair.
+		if state := p.recycleOldestBatchExitLocked(pol, target, now); state != nil {
+			reservation, err := p.reserveAcquisitionLocked(pol, state, now)
+			if err != nil {
+				return nil, false, nil, err
+			}
+			return state, false, reservation, nil
+		}
 		return nil, false, nil, ErrNoCandidate
 	}
 
@@ -775,6 +803,58 @@ func (p *Pool) eligibleLocked(state *slotState, pol policy.Policy, target string
 		}
 	}
 	return true
+}
+
+// eligibleIgnoringBatchLocked applies every selection rule except the unique
+// batch's own exclusion, which is what recycling is allowed to waive.
+func (p *Pool) eligibleIgnoringBatchLocked(
+	state *slotState,
+	pol policy.Policy,
+	target string,
+	now time.Time,
+) bool {
+	withoutBatch := pol
+	withoutBatch.UniqueBatch = ""
+	return p.eligibleLocked(state, withoutBatch, target, now)
+}
+
+// recycleOldestBatchExitLocked returns the slot whose batch burn is oldest, or
+// nil when recycling does not apply. Only the batch's own IP/slot exclusion is
+// waived: every other constraint (country, cooldown, capacity, explicit not=)
+// still has to pass, so this can never hand back an exit the caller refused.
+func (p *Pool) recycleOldestBatchExitLocked(
+	pol policy.Policy,
+	target string,
+	now time.Time,
+) *slotState {
+	if !pol.RecycleBatch || pol.UniqueBatch == "" {
+		return nil
+	}
+	b, ok := p.batches[pol.UniqueBatch]
+	if !ok || !now.Before(b.expiresAt) {
+		return nil
+	}
+	var oldest *slotState
+	var oldestSeq uint64
+	for _, id := range p.order {
+		state := p.slots[id]
+		if !p.eligibleIgnoringBatchLocked(state, pol, target, now) {
+			continue
+		}
+		if _, burned := b.usedIPs[state.publicIP]; !burned {
+			continue
+		}
+		seq := b.burnSeq[state.publicIP]
+		if oldest == nil || seq < oldestSeq {
+			oldest, oldestSeq = state, seq
+		}
+	}
+	if oldest == nil {
+		return nil
+	}
+	// Move it to the back of the ring so the next exhaustion picks someone else.
+	b.stampLocked(oldest.publicIP, now)
+	return oldest
 }
 
 func pickReady(ready []*slotState, rng *rand.Rand) *slotState {
@@ -1247,7 +1327,7 @@ func (p *Pool) reserveBatchLocked(
 		p.batches[pol.UniqueBatch] = b
 	}
 	b.expiresAt = now.Add(p.batchTTL(pol))
-	b.reserve(state.spec.ID, state.publicIP)
+	b.reserve(state.spec.ID, state.publicIP, now)
 	return &batchReservation{
 		name:   pol.UniqueBatch,
 		batch:  b,
