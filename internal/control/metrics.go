@@ -67,6 +67,27 @@ func writeMetrics(w http.ResponseWriter, snapshot pool.MetricsSnapshot) {
 	}
 
 	writeMetricHeader(w,
+		"global_egress_unique_batches",
+		"gauge",
+		"Unique-IP batches currently live.",
+	)
+	fmt.Fprintf(w, "global_egress_unique_batches %d\n", snapshot.UniqueBatches)
+
+	writeMetricHeader(w,
+		"global_egress_batch_burned_exits",
+		"gauge",
+		"Exit addresses already consumed by the largest live unique-IP batch.",
+	)
+	fmt.Fprintf(w, "global_egress_batch_burned_exits %d\n", snapshot.BatchBurnedExits)
+
+	writeMetricHeader(w,
+		"global_egress_batch_selectable_exits",
+		"gauge",
+		"Measured exit addresses still selectable by that batch before it exhausts.",
+	)
+	fmt.Fprintf(w, "global_egress_batch_selectable_exits %d\n", snapshot.BatchSelectableExits)
+
+	writeMetricHeader(w,
 		"global_egress_entry_failures_total",
 		"counter",
 		"Entry tunnel failures by reason.",

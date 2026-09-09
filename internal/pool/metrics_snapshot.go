@@ -104,6 +104,19 @@ type MetricsSnapshot struct {
 	// a scrape never loses a series just because no entry is in that state.
 	EntryStates   []EntryStateMetric
 	EntryFailures []EntryFailureMetric
+	// UniqueBatches is how many unique-IP batches are currently live. Batches are
+	// dropped by expireLocked, so this tracks real memory pressure rather than
+	// the number of batch names clients have ever used.
+	UniqueBatches int
+	// BatchBurnedExits is the largest per-batch burned-IP set. A uniq= request
+	// can never be served by an address already in its own batch, so this is the
+	// number that predicts exhaustion once batch TTLs run into hours.
+	BatchBurnedExits int
+	// BatchSelectableExits is how many measured public IPs remain outside that
+	// largest burned set. It reaching zero is exactly the point where uniq=
+	// selection starts failing with ErrNoCandidate and callers fall through to
+	// their bounded no-uniq reuse path.
+	BatchSelectableExits int
 }
 
 // Metrics returns a deterministic process-lifetime metrics snapshot.
@@ -170,6 +183,24 @@ func (p *Pool) Metrics() MetricsSnapshot {
 	sort.Slice(snapshot.EntryFailures, func(i, j int) bool {
 		return snapshot.EntryFailures[i].Reason < snapshot.EntryFailures[j].Reason
 	})
+
+	snapshot.UniqueBatches = len(p.batches)
+	for _, b := range p.batches {
+		if burned := len(b.usedIPs); burned > snapshot.BatchBurnedExits {
+			snapshot.BatchBurnedExits = burned
+		}
+	}
+	// Measured addresses only: uniq= is enforced against measured IPs, so slots
+	// without a fresh measurement are not selectable for a unique batch anyway.
+	measured := 0
+	for _, state := range p.slots {
+		if state.publicIP.IsValid() {
+			measured++
+		}
+	}
+	if selectable := measured - snapshot.BatchBurnedExits; selectable > 0 {
+		snapshot.BatchSelectableExits = selectable
+	}
 
 	snapshot.RequestedCountries = snapshotCountries(p.metrics.requestedCountries)
 	snapshot.SelectedCountries = snapshotCountries(p.metrics.selectedCountries)
