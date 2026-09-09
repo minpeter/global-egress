@@ -192,16 +192,33 @@ var hopByHopHeaders = []string{
 	"Upgrade",
 }
 
-// handleForward performs a plain http:// request on the client's behalf.
+// forwardSchemeError is returned for a scheme the forward path cannot serve.
+const forwardSchemeError = "only http:// and https:// absolute URIs are supported"
+
+// forwardSchemeSupported reports whether the forward path can originate this
+// scheme itself. https:// is included so a caller whose own TLS client is
+// refused by an origin can have the proxy terminate and re-originate TLS over
+// the same leased exit; CONNECT remains available and unchanged.
+func forwardSchemeSupported(scheme string) bool {
+	return scheme == "http" || scheme == "https"
+}
+
+func forwardDefaultPort(scheme string) int {
+	if scheme == "https" {
+		return 443
+	}
+	return 80
+}
+
+// handleForward performs an absolute-URI request on the client's behalf.
 func (s *HTTPServer) handleForward(w http.ResponseWriter, r *http.Request, pol policy.Policy, log *slog.Logger) {
-	host, port, err := splitTargetHostPort(r.URL.Host, 80)
-	if err != nil {
-		http.Error(w, "invalid HTTP proxy target", http.StatusBadRequest)
+	if !forwardSchemeSupported(r.URL.Scheme) {
+		http.Error(w, forwardSchemeError, http.StatusBadRequest)
 		return
 	}
-	if r.URL.Scheme != "http" {
-		http.Error(w, "only http:// absolute URIs are supported; use CONNECT for https://",
-			http.StatusBadRequest)
+	host, port, err := splitTargetHostPort(r.URL.Host, forwardDefaultPort(r.URL.Scheme))
+	if err != nil {
+		http.Error(w, "invalid HTTP proxy target", http.StatusBadRequest)
 		return
 	}
 
