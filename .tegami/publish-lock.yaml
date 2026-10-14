@@ -1,11 +1,19 @@
 core:changelogs:
-  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Keep Docker configuration private and readable\n\nInclude `config.toml` in the uid 65532 ownership and mode `0600` handoff so the nonroot container can read configuration created under the restrictive umask.\n"
-    filename: 2026-08-27-docker-config-permissions.md
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Distinguish proxy acquisition timeouts\n\nReturn HTTP 504 when proxy acquisition ends on a context deadline. Pool\nexhaustion and unknown failures remain HTTP 502, so clients can rotate stalled\nexits without broadening retries for ordinary upstream failures.\n"
+    filename: 2026-08-27-connect-deadline-status.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: patch\n---\n\n## Keep the textfile collector parseable and stoppable\n\nThe collector no longer redeclares a `/v1/stats` field that `/v1/metrics`\nalready exports. A second `# TYPE` line made node_exporter's textfile\ncollector reject the whole file, so every Global Egress Proxy panel showed\nNo data. The daemon now exits on SIGTERM and removes its temporary output,\nso `rc-service global-egress-metrics restart` replaces the running process.\n"
+    filename: 2026-10-15-collector-duplicate-type.md
+    v: 0.0.0
+  - content: "---\npackages:\n  github.com/minpeter/global-egress:\n    type: minor\n---\n\n## Require Go 1.26.9\n\nRaise the minimum Go version from 1.25.13 to 1.26.9 and update\n`golang.org/x/net` to v0.60.0. govulncheck found nine reachable\nstandard-library vulnerabilities in the HTTP/2, CONNECT, TLS and MIME header\npaths that the proxy uses, and Go 1.25 has no fixed release. Building with Go\n1.25 is no longer supported. The container image is built with Go 1.26.9.\n"
+    filename: 2026-10-15-go-1-26-floor.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - 2026-08-27-docker-config-permissions.md
+      - 2026-08-27-connect-deadline-status.md
+      - 2026-10-15-collector-duplicate-type.md
+      - 2026-10-15-go-1-26-floor.md
     id: go:github.com/minpeter/global-egress
     updated: true
 go-root:version:
-  - version: 0.0.6
+  - version: 0.1.0
