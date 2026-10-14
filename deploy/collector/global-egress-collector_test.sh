@@ -50,6 +50,34 @@ CONTROL="file://$TMP/api" OUT_DIR="$TMP/metrics" \
   sh "$ROOT/deploy/collector/global-egress-collector" once
 
 METRICS="$TMP/metrics/global_egress.prom"
+
+# The textfile collector rejects the whole file when a metric is declared twice,
+# so a field that /v1/stats and /v1/metrics both expose must appear only once.
+mkdir -p "$TMP/overlap/api/v1" "$TMP/overlap-metrics"
+cp "$TMP/api/v1/entries" "$TMP/api/v1/country-acquisitions" "$TMP/overlap/api/v1/"
+printf '%s\n' '{
+  "slots": 3,
+  "unique_batches": 0
+}' >"$TMP/overlap/api/v1/stats"
+printf '%s\n' \
+  '# HELP global_egress_unique_batches Unique-IP batches currently live.' \
+  '# TYPE global_egress_unique_batches gauge' \
+  'global_egress_unique_batches 0' \
+  >"$TMP/overlap/api/v1/metrics"
+CONTROL="file://$TMP/overlap/api" OUT_DIR="$TMP/overlap-metrics" \
+  sh "$ROOT/deploy/collector/global-egress-collector" once
+OVERLAP="$TMP/overlap-metrics/global_egress.prom"
+grep -Fx 'global_egress_slots 3' "$OVERLAP"
+dup=$(sed -n 's/^# TYPE \([^ ]*\) .*/\1/p' "$OVERLAP" | sort | uniq -d)
+if [ -n "$dup" ]; then
+  echo "metric declared more than once: $dup" >&2
+  exit 1
+fi
+if command -v promtool >/dev/null 2>&1; then
+  promtool check metrics <"$OVERLAP" 2>&1 | grep -v -i 'no help text' | grep . && exit 1
+  true
+fi
+
 grep -Fx 'global_egress_country_acquisitions_total{country="jp"} 3' "$METRICS"
 grep -Fx 'global_egress_country_acquisitions_total{country="us"} 1' "$METRICS"
 grep -Fx 'global_egress_request_results_total{result="success",country="jp",entry="entry-jp"} 3' "$METRICS"
@@ -316,3 +344,39 @@ assert_paths "$TMP/auth-log" "Bearer $TOKEN"
 assert_no_token_leak "$TOKEN" \
   "$TMP/auth-metrics/global_egress.prom" \
   "$TMP/auth-argv"
+
+# The OpenRC service stops the daemon with SIGTERM. The loop must exit promptly
+# (not after the next sleep) and leave neither its temp output nor its curl
+# config behind; otherwise `rc-service restart` reports a refused stop and the
+# old code keeps running.
+mkdir "$TMP/loop-metrics" "$TMP/loop-tmp"
+CONTROL="file://$TMP/api" OUT_DIR="$TMP/loop-metrics" INTERVAL=30 \
+  CONTROL_TOKEN_FILE="$TMP/control-token" TMPDIR="$TMP/loop-tmp" \
+  sh "$ROOT/deploy/collector/global-egress-collector" &
+LOOP_PID=$!
+PIDS="$PIDS $LOOP_PID"
+i=0
+while [ ! -s "$TMP/loop-metrics/global_egress.prom" ] && [ "$i" -lt 50 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+kill -TERM "$LOOP_PID"
+i=0
+while kill -0 "$LOOP_PID" 2>/dev/null && [ "$i" -lt 30 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+if kill -0 "$LOOP_PID" 2>/dev/null; then
+  echo "collector loop ignored SIGTERM" >&2
+  exit 1
+fi
+left=
+for f in "$TMP"/loop-tmp/* "$TMP"/loop-metrics/*; do
+  [ -e "$f" ] || continue
+  [ "$f" = "$TMP/loop-metrics/global_egress.prom" ] && continue
+  left="$left $f"
+done
+if [ -n "$left" ]; then
+  echo "collector left files behind after SIGTERM: $left" >&2
+  exit 1
+fi
