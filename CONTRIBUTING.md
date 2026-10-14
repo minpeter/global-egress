@@ -28,7 +28,7 @@ CI runs these jobs in parallel:
 |---|---|
 | `lint` | golangci-lint, plus `golangci-lint fmt --diff` |
 | `modules` | `go mod tidy` leaves no diff, `go mod verify` passes |
-| `test` | build, tests and race tests on Go 1.25.x **and** stable |
+| `test` | build, tests and race tests on Go 1.26.x **and** stable |
 | `cross-build` | linux/amd64, linux/arm64, darwin/arm64 compile |
 | `vulncheck` | `govulncheck` |
 
@@ -58,18 +58,23 @@ a release. Merge the Version Packages PR only when you mean to ship.
 
 ## Supported Go versions
 
-The floor is **Go 1.25.13**, and both parts of that are forced:
+The floor is **Go 1.26.9**, and both parts of that are forced:
 
-- the minor version by `golang.org/x/net` and `golang.org/x/crypto`, which require
-  1.25, so Go 1.24 cannot resolve the module graph at all
-- the patch version by `govulncheck`, which found ten reachable standard-library
-  vulnerabilities in 1.25.0 - in `crypto/tls`, `net/http`, `crypto/x509`,
-  `net/textproto`, `net/url` and `os` - the last of them fixed in 1.25.13
+- the minor version by `golang.org/x/net` v0.60.0, which requires 1.26 and
+  carries the HTTP/2 fixes the patch release below depends on
+- the patch version by `govulncheck`, which found nine reachable standard-library
+  vulnerabilities in 1.25.14 - HTTP/2 and CONNECT handling in `net/http`, plus
+  `crypto/tls` and `net/textproto` - fixed only in 1.26.9, with no 1.25 backport
+
+The previous floor was 1.25.13, set the same way after ten reachable
+vulnerabilities in 1.25.0.
 
 The `vulncheck` job runs against the toolchain named in `go.mod` on purpose. The go
 directive is a promise about the oldest release users may build with, so raising the
 floor is the fix when a vulnerability is reachable there; testing only against
-`stable` would hide it.
+`stable` would hide it. `govulncheck` itself is pinned in CI and the Makefile: an
+unpinned release can require a newer Go than `go.mod`, fail to install, and skip
+the scan without reporting anything.
 
 There are no external services in the unit tests: WireGuard and SOCKS behaviour is
 exercised against in-process fakes, and anything that would dial a provider is

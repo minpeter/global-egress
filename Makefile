@@ -60,8 +60,9 @@ fmtcheck: tools
 lint: tools
 	$(GOBIN)/golangci-lint run ./...
 
+# Pinned to the version CI uses; see the vulncheck job in .github/workflows/ci.yaml.
 vulncheck:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 # Pinned to the version CI uses.
 tools:
