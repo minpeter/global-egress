@@ -126,14 +126,14 @@ make outdated    # only modules actually built against
 ```
 
 CI jobs: `lint`, `modules` (tidy leaves no diff + `go mod verify`), `test` on Go
-1.25.x and stable including `-race`, `cross-build` (linux/amd64, linux/arm64,
-darwin/arm64), `vulncheck`.
+1.26.x and stable including `-race`, `cross-build` (linux/amd64, linux/arm64,
+darwin/arm64), `vulncheck` (pinned govulncheck, never `@latest`).
 
 ## NOTES
 
-- Go floor is **1.25.13** and both parts are forced: minor by `golang.org/x/net`
-  and `x/crypto`, patch by reachable stdlib vulnerabilities. `vulncheck` runs
-  against the `go.mod` toolchain on purpose.
+- Go floor is **1.26.9** and both parts are forced: minor by `golang.org/x/net`
+  v0.60.0, patch by reachable stdlib vulnerabilities with no 1.25 backport.
+  `vulncheck` runs against the `go.mod` toolchain on purpose.
 - Directives ride in the proxy username, so a client must send a non-empty
   password (`cc=jp:x`). Several clients silently drop credentials otherwise and the
   request succeeds from an arbitrary exit. `access.require_policy` turns that into

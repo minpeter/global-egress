@@ -466,9 +466,8 @@ measurements behind the design.
 
 ## Requirements
 
-- Go 1.25.13 or newer (the minor version comes from `golang.org/x/net` and
-  `golang.org/x/crypto`; the patch version from reachable stdlib vulnerabilities in
-  earlier 1.25 releases)
+- Go 1.26.9 or newer (the minor version comes from `golang.org/x/net`; the patch
+  version from reachable stdlib vulnerabilities that have no Go 1.25 fix)
 - Linux for deployment; the code also compiles for darwin/arm64
 - A Mullvad account and its WireGuard configuration bundle, for the default
   `relay-socks` mode. Any WireGuard bundle works in `wireguard` mode.

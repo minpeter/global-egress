@@ -72,7 +72,7 @@ jobs:
         # The oldest supported toolchain is the floor declared in go.mod, which is
         # itself set by what golang.org/x/net and x/crypto require. "stable" catches
         # regressions from new releases before they reach users.
-        go: ["1.25.13", "stable"]
+        go: ["1.26.9", "stable"]
     name: test (go ${{ matrix.go }})
     steps:
       - uses: actions/checkout@v7
@@ -144,5 +144,9 @@ jobs:
       # release. The go directive is a promise about the oldest version users may
       # build with, so it is the version that has to be free of reachable
       # vulnerabilities. Checking only "stable" would hide exactly that.
+      #
+      # Pinned, not @latest: govulncheck's own go directive moves independently of
+      # ours, and an unpinned release that needs a newer Go than go.mod fails to
+      # install, which silently skips the scan. Bump it deliberately.
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
