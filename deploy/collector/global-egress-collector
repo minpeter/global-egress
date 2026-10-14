@@ -17,8 +17,13 @@ AUTH_CONFIG=
 
 cleanup() {
   [ -z "$AUTH_CONFIG" ] || rm -f "$AUTH_CONFIG"
+  rm -f "$OUT.$$"
 }
-trap cleanup EXIT HUP INT TERM
+# A trap on EXIT alone runs cleanup once. TERM/INT/HUP must also *exit*: a
+# trap that only cleans up returns to the loop, so the daemon ignores the
+# OpenRC stop signal and `rc-service restart` keeps the old process running.
+trap cleanup EXIT
+trap 'exit 143' HUP INT TERM
 
 if [ -n "$CONTROL_TOKEN_FILE" ]; then
   [ -r "$CONTROL_TOKEN_FILE" ] || {
@@ -63,11 +68,21 @@ emit() {
     fi
     echo 'global_egress_up 1'
 
+    # Fetched before the stats loop so a field the service already exports with
+    # HELP/TYPE is not declared a second time. node_exporter's textfile collector
+    # rejects the whole file on a duplicate TYPE line, which blanks every panel.
+    extended_ok=1
+    extended_metrics=$(control_get -fsS --max-time 8 "$CONTROL/v1/metrics" 2>/dev/null) || extended_ok=0
+    declared=$(printf '%s\n' "$extended_metrics" | sed -n 's/^# TYPE \([a-zA-Z_:][a-zA-Z0-9_:]*\) .*/\1/p')
+
     # One series per numeric field of /v1/stats, named after the field. Fields
     # ending in _total are monotonic, so they are declared as counters and can be
     # rate()-d; everything else is a point-in-time gauge.
     echo "$stats" | sed -n 's/^[[:space:]]*"\([a-z_]*\)": \([0-9][0-9]*\),\{0,1\}$/\1 \2/p' |
       while read -r key value; do
+        if printf '%s\n' "$declared" | grep -Fqx "global_egress_$key"; then
+          continue
+        fi
         case "$key" in
           *_total) echo "# TYPE global_egress_$key counter" ;;
           *)       echo "# TYPE global_egress_$key gauge" ;;
@@ -90,7 +105,7 @@ emit() {
         country = ""
       }'
 
-    if extended_metrics=$(control_get -fsS --max-time 8 "$CONTROL/v1/metrics" 2>/dev/null); then
+    if [ "$extended_ok" = 1 ]; then
       printf '%s\n' "$extended_metrics"
     else
       echo '# global-egress extended metrics unavailable'
@@ -136,5 +151,8 @@ if [ "${1:-}" = "once" ]; then
 fi
 while :; do
   emit
-  sleep "$INTERVAL"
+  # Backgrounded so a TERM during the interval is handled immediately: the shell
+  # defers traps until a foreground command returns, but `wait` is interruptible.
+  sleep "$INTERVAL" &
+  wait $!
 done
