@@ -1,3 +1,27 @@
+## github.com/minpeter/global-egress@0.1.0
+
+### Distinguish proxy acquisition timeouts
+
+Return HTTP 504 when proxy acquisition ends on a context deadline. Pool
+exhaustion and unknown failures remain HTTP 502, so clients can rotate stalled
+exits without broadening retries for ordinary upstream failures.
+
+### Keep the textfile collector parseable and stoppable
+
+The collector no longer redeclares a `/v1/stats` field that `/v1/metrics`
+already exports. A second `# TYPE` line made node_exporter's textfile
+collector reject the whole file, so every Global Egress Proxy panel showed
+No data. The daemon now exits on SIGTERM and removes its temporary output,
+so `rc-service global-egress-metrics restart` replaces the running process.
+
+### Require Go 1.26.9
+
+Raise the minimum Go version from 1.25.13 to 1.26.9 and update
+`golang.org/x/net` to v0.60.0. govulncheck found nine reachable
+standard-library vulnerabilities in the HTTP/2, CONNECT, TLS and MIME header
+paths that the proxy uses, and Go 1.25 has no fixed release. Building with Go
+1.25 is no longer supported. The container image is built with Go 1.26.9.
+
 ## github.com/minpeter/global-egress@0.0.6
 
 ### Keep Docker configuration private and readable
