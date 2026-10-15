@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: instabox-k3s
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -41,7 +41,7 @@ jobs:
   # Module bookkeeping is easy to forget in a pull request and annoying to discover
   # later, so it gets its own fast job.
   modules:
-    runs-on: ubuntu-latest
+    runs-on: instabox-k3s
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -64,7 +64,7 @@ jobs:
         run: go mod verify
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: instabox-k3s
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -99,7 +99,7 @@ jobs:
   # The release workflow cross-compiles; verify those targets on every change
   # rather than discovering a broken build on tag day.
   cross-build:
-    runs-on: ubuntu-latest
+    runs-on: instabox-k3s
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -130,7 +130,7 @@ jobs:
         run: go build ./...
 
   vulncheck:
-    runs-on: ubuntu-latest
+    runs-on: instabox-k3s
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
